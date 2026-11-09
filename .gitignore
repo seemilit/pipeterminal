@@ -25,6 +25,7 @@ logs/
 
 # Local configuration
 .env
+/conf/
 
 # OS
 .DS_Store

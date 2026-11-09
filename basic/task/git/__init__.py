@@ -1,0 +1,1 @@
+"""Independent Git workflow actions."""

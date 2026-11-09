@@ -1,0 +1,148 @@
+name: Release PipeTerminal for Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeterminal-windows-release
+  queue: max
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+    steps:
+      - name: Check publishing configuration
+        shell: pwsh
+        env:
+          PAID_REPOSITORY: ${{ vars.PAID_REPOSITORY }}
+          PAID_REPO_TOKEN: ${{ secrets.PAID_REPO_TOKEN }}
+          GITEE_REPOSITORY: ${{ vars.GITEE_REPOSITORY }}
+          GITEE_KNOWN_HOSTS: ${{ vars.GITEE_KNOWN_HOSTS }}
+          GITEE_PUSH_SSH_KEY: ${{ secrets.GITEE_PUSH_SSH_KEY }}
+          GITEE_RELEASE_TOKEN: ${{ secrets.GITEE_RELEASE_TOKEN }}
+        run: |
+          foreach ($name in @('PAID_REPOSITORY', 'PAID_REPO_TOKEN', 'GITEE_REPOSITORY',
+                               'GITEE_KNOWN_HOSTS', 'GITEE_PUSH_SSH_KEY', 'GITEE_RELEASE_TOKEN')) {
+              if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+                  throw "Configure $name in GitHub Actions before publishing."
+              }
+          }
+          if ($env:PAID_REPOSITORY -eq $env:GITHUB_REPOSITORY) {
+              throw "PAID_REPOSITORY must be the separate paid repository."
+          }
+          if ($env:GITEE_REPOSITORY -notmatch '^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$') {
+              throw "GITEE_REPOSITORY must use owner/repo format."
+          }
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          path: pipeterminal
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ vars.PAID_REPOSITORY }}
+          ref: main
+          token: ${{ secrets.PAID_REPO_TOKEN }}
+          path: pipeterminal-private
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Build a single portable EXE
+        id: package
+        shell: pwsh
+        run: |
+          python pipeterminal/packaging/build.py --name PipeTerminal-Paid --project-root pipeterminal-private --extension-package premium --onefile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $files = @(Get-ChildItem pipeterminal-private/dist -Filter 'PipeTerminal-Paid-*.exe' -File)
+          if ($files.Count -ne 1) { throw 'Expected exactly one EXE.' }
+          $match = [regex]::Match($files[0].Name, '^PipeTerminal-Paid-([0-9]+\.[0-9]+\.[0-9]+)\.exe$')
+          if (-not $match.Success) { throw 'Expected a versioned EXE.' }
+          $version = $match.Groups[1].Value
+          if ($files[0].Length -gt 100000000) { throw 'The EXE exceeds the Gitee attachment limit (100 MB).' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pipeterminal-windows-exe
+          path: pipeterminal-private/dist/PipeTerminal-Paid-*.exe
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: pipeterminal-windows-exe
+          path: release-files
+      - name: Publish to GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="v$VERSION"
+          ref="refs/tags/$tag"
+          asset="PipeTerminal-Paid-$VERSION.exe"
+          refs="$(git ls-remote origin "$ref" "$ref^{}")"
+          if [[ -n "$refs" ]]; then
+            commit="$(awk -v ref="$ref" '$2 == ref { tag = $1 } $2 == ref "^{}" { peeled = $1 } END { print (peeled ? peeled : tag) }' <<< "$refs")"
+            if [[ "$commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::$tag already refers to a different commit."
+              exit 1
+            fi
+          fi
+          if release_assets="$(gh release view "$tag" --json assets --jq '.assets[].name')"; then
+            if grep -Fxq "$asset" <<< "$release_assets"; then
+              # Use the already-published bytes if the job is being retried.
+              gh release download "$tag" --pattern "$asset" --dir release-files --clobber
+            else
+              gh release upload "$tag" "release-files/$asset"
+            fi
+          else
+            args=(--target "$GITHUB_SHA")
+            if [[ -n "$refs" ]]; then args=(--verify-tag); fi
+            gh release create "$tag" "release-files/$asset" "${args[@]}" --title "PipeTerminal $VERSION" --generate-notes
+          fi
+      - name: Sync the public release tag to Gitee
+        env:
+          GITEE_REPOSITORY: ${{ vars.GITEE_REPOSITORY }}
+          GITEE_KNOWN_HOSTS: ${{ vars.GITEE_KNOWN_HOSTS }}
+          GITEE_PUSH_SSH_KEY: ${{ secrets.GITEE_PUSH_SSH_KEY }}
+        shell: bash
+        run: |
+          ref="refs/tags/v$VERSION"
+          git fetch --no-tags origin "$ref"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+          umask 077
+          ssh_dir="$(mktemp -d)"
+          trap 'rm -f -- "$ssh_dir/key" "$ssh_dir/known_hosts"; rmdir -- "$ssh_dir"' EXIT
+          printf '%s\n' "$GITEE_PUSH_SSH_KEY" | tr -d '\r' > "$ssh_dir/key"
+          printf '%s\n' "$GITEE_KNOWN_HOSTS" | tr -d '\r' > "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_dir/known_hosts"
+          git push "git@gitee.com:$GITEE_REPOSITORY.git" "FETCH_HEAD:$ref"
+      - name: Publish the same EXE to Gitee
+        env:
+          GITEE_REPOSITORY: ${{ vars.GITEE_REPOSITORY }}
+          GITEE_RELEASE_TOKEN: ${{ secrets.GITEE_RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          python3 packaging/publish_gitee.py "v$VERSION" "$GITHUB_SHA" "release-files/PipeTerminal-Paid-$VERSION.exe"

@@ -1,0 +1,96 @@
+"""Publish the GitHub Release executable to the matching Gitee tag."""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
+
+
+def request_json(url: str, token: str, *, data=None, missing_ok=False):
+    request = Request(
+        url,
+        data=urlencode(data).encode("utf-8") if data is not None else None,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    try:
+        with urlopen(request, timeout=60) as response:
+            return json.load(response)
+    except HTTPError as error:
+        if missing_ok and error.code == 404:
+            return None
+        raise RuntimeError(f"Gitee API request failed (HTTP {error.code}): {request.method} {url}") from None
+
+
+def publish_release(repository: str, token: str, tag: str, commit: str, executable: Path) -> None:
+    if not re.fullmatch(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+", repository):
+        raise ValueError("GITEE_REPOSITORY must use owner/repo format.")
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("A version tag and the full public commit SHA are required.")
+    if not token or not executable.is_file():
+        raise ValueError("The Gitee release token and executable are required.")
+    if executable.stat().st_size > 100_000_000:
+        raise ValueError("The EXE exceeds the Gitee attachment limit (100 MB).")
+
+    releases_url = f"https://gitee.com/api/v5/repos/{repository}/releases"
+    with executable.open("rb") as source:
+        digest = hashlib.file_digest(source, "sha256").hexdigest()
+    release = request_json(f"{releases_url}/tags/{quote(tag, safe='')}", token, missing_ok=True)
+    if release is None:
+        release = request_json(releases_url, token, data={
+            "tag_name": tag,
+            "target_commitish": commit,
+            "name": f"PipeTerminal {tag[1:]}",
+            "body": f"Windows portable executable.\n\nSHA-256: `{digest}`",
+        })
+    if release["tag_name"] != tag or type(release["id"]) is not int:
+        raise RuntimeError("Gitee returned an unexpected Release.")
+    attachments_url = f"{releases_url}/{release['id']}/attach_files"
+    for attachment in request_json(attachments_url, token):
+        if (attachment.get("name") or attachment.get("filename")) != executable.name:
+            continue
+        attachment_id = attachment["id"]
+        if type(attachment_id) is not int:
+            raise RuntimeError("Gitee returned an invalid attachment ID.")
+        # Download the public asset without sending the publishing token to its host.
+        with urlopen(f"{attachments_url}/{attachment_id}/download", timeout=120) as response:
+            if hashlib.file_digest(response, "sha256").hexdigest() != digest:
+                raise RuntimeError(f"Gitee already has a different asset named {executable.name}.")
+        print(f"Gitee already has the matching asset for {tag}.")
+        return
+
+    result = subprocess.run([
+        "curl", "--fail", "--silent", "--show-error", "--max-time", "600",
+        "--header", "@-", "--form", f"file=@{executable}",
+        "--output", os.devnull, attachments_url,
+    ], input=f"Authorization: Bearer {token}\n", text=True, check=False)
+    if result.returncode:
+        raise RuntimeError(f"Gitee attachment upload failed (curl exit {result.returncode}).")
+    print(f"Published {executable.name} to Gitee {tag}.")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("tag")
+    parser.add_argument("commit")
+    parser.add_argument("executable", type=Path)
+    arguments = parser.parse_args()
+    try:
+        publish_release(
+            os.environ.get("GITEE_REPOSITORY", ""), os.environ.get("GITEE_RELEASE_TOKEN", ""),
+            arguments.tag, arguments.commit, arguments.executable,
+        )
+    except (OSError, URLError, ValueError, RuntimeError, KeyError, TypeError) as error:
+        print(f"Gitee publishing failed: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

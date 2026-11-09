@@ -1,0 +1,4 @@
+PySide6-Essentials>=6.8,<7
+wcwidth>=0.2.13,<1
+paramiko>=3.4,<5
+cryptography>=43
