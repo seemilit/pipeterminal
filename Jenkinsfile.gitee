@@ -1,0 +1,75 @@
+pipeline {
+    agent { label 'windows' }
+
+    options {
+        skipDefaultCheckout()
+        disableConcurrentBuilds()
+        timeout(time: 45, unit: 'MINUTES')
+    }
+
+    // Outbound polling also works when Jenkins cannot receive a public webhook.
+    triggers { pollSCM('H/5 * * * *') }
+
+    stages {
+        stage('Checkout Gitee repositories') {
+            steps {
+                deleteDir()
+                dir('pipeterminal') {
+                    checkout scm
+                    script {
+                        env.GITEE_REPOSITORY = powershell(returnStdout: true, script: '''
+                            $ErrorActionPreference = 'Stop'
+                            $remote = git remote get-url origin
+                            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                            $match = [regex]::Match($remote, '^https://gitee[.]com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:[.]git)?$')
+                            if (-not $match.Success) { throw 'Set the job SCM URL to the public Gitee HTTPS repository.' }
+                            $match.Groups[1].Value
+                        ''').trim()
+                        env.RELEASE_COMMIT = powershell(returnStdout: true, script: '''
+                            git rev-parse HEAD
+                            exit $LASTEXITCODE
+                        ''').trim()
+                    }
+                }
+                dir('pipeterminal-private') {
+                    withCredentials([string(credentialsId: 'gitee-paid-repository', variable: 'GITEE_PAID_REPOSITORY')]) {
+                        script {
+                            def paid = env.GITEE_PAID_REPOSITORY.trim()
+                            if (!(paid ==~ /[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/) || paid.equalsIgnoreCase(env.GITEE_REPOSITORY)) {
+                                error('gitee-paid-repository must identify the separate paid Gitee repository as owner/repo.')
+                            }
+                            git branch: 'main', credentialsId: 'gitee-paid-ssh',
+                                url: 'git@gitee.com:' + paid + '.git', changelog: false, poll: false
+                        }
+                    }
+                }
+            }
+        }
+        stage('Build Windows EXE') {
+            steps {
+                powershell '''
+                    $ErrorActionPreference = 'Stop'
+                    python pipeterminal/packaging/build.py --name PipeTerminal-Paid --project-root pipeterminal-private --extension-package premium --onefile
+                    exit $LASTEXITCODE
+                '''
+                archiveArtifacts artifacts: 'pipeterminal-private/dist/PipeTerminal-Paid-*.exe', fingerprint: true
+            }
+        }
+        stage('Publish to Gitee') {
+            steps {
+                withCredentials([string(credentialsId: 'gitee-release-token', variable: 'GITEE_RELEASE_TOKEN')]) {
+                    powershell '''
+                        $ErrorActionPreference = 'Stop'
+                        $files = @(Get-ChildItem pipeterminal-private/dist -Filter 'PipeTerminal-Paid-*.exe' -File)
+                        if ($files.Count -ne 1) { throw 'Expected exactly one EXE.' }
+                        $match = [regex]::Match($files[0].Name, '^PipeTerminal-Paid-([0-9]+[.][0-9]+[.][0-9]+)[.]exe$')
+                        if (-not $match.Success) { throw 'Expected a versioned EXE.' }
+                        $tag = 'v' + $match.Groups[1].Value
+                        python pipeterminal/packaging/publish_gitee.py $tag $env:RELEASE_COMMIT $files[0].FullName
+                        exit $LASTEXITCODE
+                    '''
+                }
+            }
+        }
+    }
+}

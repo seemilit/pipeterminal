@@ -1,4 +1,4 @@
-"""Publish the GitHub Release executable to the matching Gitee tag."""
+"""Publish a locally built executable to a Gitee release."""
 
 import argparse
 import hashlib
@@ -28,6 +28,22 @@ def request_json(url: str, token: str, *, data=None, missing_ok=False):
         raise RuntimeError(f"Gitee API request failed (HTTP {error.code}): {request.method} {url}") from None
 
 
+def tag_commit(repository: str, tag: str) -> str | None:
+    ref = f"refs/tags/{tag}"
+    peeled = f"{ref}^{{}}"
+    result = subprocess.run(
+        ["git", "ls-remote", f"https://gitee.com/{repository}.git", ref, peeled],
+        check=False, capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode:
+        raise RuntimeError("Could not read the release tag from Gitee.")
+    refs = {}
+    for line in result.stdout.splitlines():
+        commit, remote_ref = line.split("\t", 1)
+        refs[remote_ref] = commit
+    return refs.get(peeled) or refs.get(ref)
+
+
 def publish_release(repository: str, token: str, tag: str, commit: str, executable: Path) -> None:
     if not re.fullmatch(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+", repository):
         raise ValueError("GITEE_REPOSITORY must use owner/repo format.")
@@ -38,7 +54,14 @@ def publish_release(repository: str, token: str, tag: str, commit: str, executab
     if executable.stat().st_size > 100_000_000:
         raise ValueError("The EXE exceeds the Gitee attachment limit (100 MB).")
 
-    releases_url = f"https://gitee.com/api/v5/repos/{repository}/releases"
+    repository_url = f"https://gitee.com/api/v5/repos/{repository}"
+    existing_commit = tag_commit(repository, tag)
+    if existing_commit is None:
+        request_json(f"{repository_url}/tags", token, data={"tag_name": tag, "refs": commit})
+        existing_commit = tag_commit(repository, tag)
+    if existing_commit != commit:
+        raise RuntimeError(f"Gitee tag {tag} does not point to the built commit.")
+    releases_url = f"{repository_url}/releases"
     with executable.open("rb") as source:
         digest = hashlib.file_digest(source, "sha256").hexdigest()
     release = request_json(f"{releases_url}/tags/{quote(tag, safe='')}", token, missing_ok=True)
@@ -65,11 +88,12 @@ def publish_release(repository: str, token: str, tag: str, commit: str, executab
         print(f"Gitee already has the matching asset for {tag}.")
         return
 
+    curl = "curl.exe" if sys.platform == "win32" else "curl"
     result = subprocess.run([
-        "curl", "--fail", "--silent", "--show-error", "--max-time", "600",
-        "--header", "@-", "--form", f"file=@{executable}",
+        curl, "--fail", "--silent", "--show-error", "--max-time", "600",
+        "--header", "@-", "--form", f"file=@{executable.name}",
         "--output", os.devnull, attachments_url,
-    ], input=f"Authorization: Bearer {token}\n", text=True, check=False)
+    ], input=f"Authorization: Bearer {token}\n", text=True, check=False, cwd=executable.parent)
     if result.returncode:
         raise RuntimeError(f"Gitee attachment upload failed (curl exit {result.returncode}).")
     print(f"Published {executable.name} to Gitee {tag}.")
@@ -86,7 +110,7 @@ def main() -> int:
             os.environ.get("GITEE_REPOSITORY", ""), os.environ.get("GITEE_RELEASE_TOKEN", ""),
             arguments.tag, arguments.commit, arguments.executable,
         )
-    except (OSError, URLError, ValueError, RuntimeError, KeyError, TypeError) as error:
+    except (OSError, URLError, ValueError, RuntimeError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
         print(f"Gitee publishing failed: {error}", file=sys.stderr)
         return 1
     return 0
