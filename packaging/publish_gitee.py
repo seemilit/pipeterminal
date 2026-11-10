@@ -91,7 +91,7 @@ def publish_release(repository: str, token: str, tag: str, commit: str, executab
     curl = "curl.exe" if sys.platform == "win32" else "curl"
     result = subprocess.run([
         curl, "--fail", "--silent", "--show-error", "--http1.1",
-        "--connect-timeout", "30", "--max-time", "600",
+        "--connect-timeout", "30", "--max-time", "10000",
         "--header", "@-", "--header", "Expect:", "--form", f"file=@{executable.name}",
         "--output", os.devnull,
         "--write-out", "Gitee upload: HTTP %{http_code}, sent %{size_upload} bytes in %{time_total}s\n",
