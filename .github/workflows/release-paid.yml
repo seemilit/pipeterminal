@@ -110,3 +110,33 @@ jobs:
             if [[ -n "$refs" ]]; then args=(--verify-tag); fi
             gh release create "$tag" "release-files/$asset" "${args[@]}" --title "PipeTerminal $VERSION" --generate-notes
           fi
+
+  publish-gitee:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Download the published EXE
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release download "v$VERSION" --pattern "PipeTerminal-Paid-$VERSION.exe" --dir release-files
+      - name: Publish to Gitee
+        env:
+          GITEE_REPOSITORY: ${{ vars.GITEE_REPOSITORY }}
+          GITEE_RELEASE_TOKEN: ${{ secrets.GITEE_RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          if [[ -z "$GITEE_REPOSITORY" || -z "$GITEE_RELEASE_TOKEN" ]]; then
+            echo '::error::Configure the GITEE_REPOSITORY variable and GITEE_RELEASE_TOKEN secret before publishing.'
+            exit 1
+          fi
+          python packaging/publish_gitee.py "v$VERSION" "$GITHUB_SHA" "release-files/PipeTerminal-Paid-$VERSION.exe"
