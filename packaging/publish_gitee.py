@@ -90,9 +90,12 @@ def publish_release(repository: str, token: str, tag: str, commit: str, executab
 
     curl = "curl.exe" if sys.platform == "win32" else "curl"
     result = subprocess.run([
-        curl, "--fail", "--silent", "--show-error", "--max-time", "600",
-        "--header", "@-", "--form", f"file=@{executable.name}",
-        "--output", os.devnull, attachments_url,
+        curl, "--fail", "--silent", "--show-error", "--http1.1",
+        "--connect-timeout", "30", "--max-time", "600",
+        "--header", "@-", "--header", "Expect:", "--form", f"file=@{executable.name}",
+        "--output", os.devnull,
+        "--write-out", "Gitee upload: HTTP %{http_code}, sent %{size_upload} bytes in %{time_total}s\n",
+        attachments_url,
     ], input=f"Authorization: Bearer {token}\n", text=True, check=False, cwd=executable.parent)
     if result.returncode:
         raise RuntimeError(f"Gitee attachment upload failed (curl exit {result.returncode}).")
