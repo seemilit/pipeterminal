@@ -49,22 +49,28 @@ jobs:
         with:
           python-version: '3.12'
           architecture: x64
-      - name: Build a single portable EXE
+      - name: Build the EXE, portable ZIP and installer
         id: package
         shell: pwsh
         run: |
-          python pipeterminal/packaging/build.py --name PipeTerminal-Paid --project-root pipeterminal-private --extension-package premium --onefile
+          python pipeterminal/packaging/build.py --name PipeTerminal-Paid --project-root pipeterminal-private --extension-package premium --release-formats
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $files = @(Get-ChildItem pipeterminal-private/dist -Filter 'PipeTerminal-Paid-*.exe' -File)
-          if ($files.Count -ne 1) { throw 'Expected exactly one EXE.' }
-          $match = [regex]::Match($files[0].Name, '^PipeTerminal-Paid-([0-9]+\.[0-9]+\.[0-9]+)\.exe$')
-          if (-not $match.Success) { throw 'Expected a versioned EXE.' }
-          $version = $match.Groups[1].Value
+          $files = @(Get-ChildItem pipeterminal-private/dist -File | Where-Object Name -Match '^PipeTerminal-Paid-[0-9]+\.[0-9]+\.[0-9]+\.exe$')
+          if ($files.Count -ne 1) { throw 'Expected exactly one versioned standalone EXE.' }
+          $version = $files[0].BaseName.Substring('PipeTerminal-Paid-'.Length)
+          foreach ($suffix in @('-Portable.zip', '-Setup.exe')) {
+              if (-not (Test-Path -LiteralPath "pipeterminal-private/dist/PipeTerminal-Paid-$version$suffix" -PathType Leaf)) {
+                  throw "Missing release package with suffix $suffix."
+              }
+          }
           "version=$version" >> $env:GITHUB_OUTPUT
       - uses: actions/upload-artifact@v4
         with:
-          name: pipeterminal-windows-exe
-          path: pipeterminal-private/dist/PipeTerminal-Paid-*.exe
+          name: pipeterminal-windows-packages
+          path: |
+            pipeterminal-private/dist/PipeTerminal-Paid-${{ steps.package.outputs.version }}.exe
+            pipeterminal-private/dist/PipeTerminal-Paid-${{ steps.package.outputs.version }}-Portable.zip
+            pipeterminal-private/dist/PipeTerminal-Paid-${{ steps.package.outputs.version }}-Setup.exe
           if-no-files-found: error
           compression-level: 0
           overwrite: true
@@ -83,7 +89,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          name: pipeterminal-windows-exe
+          name: pipeterminal-windows-packages
           path: release-files
       - name: Publish to GitHub
         env:
@@ -92,7 +98,8 @@ jobs:
         run: |
           tag="v$VERSION"
           ref="refs/tags/$tag"
-          asset="PipeTerminal-Paid-$VERSION.exe"
+          prefix="PipeTerminal-Paid-$VERSION"
+          assets=("release-files/$prefix.exe" "release-files/$prefix-Portable.zip" "release-files/$prefix-Setup.exe")
           refs="$(git ls-remote origin "$ref" "$ref^{}")"
           if [[ -n "$refs" ]]; then
             commit="$(awk -v ref="$ref" '$2 == ref { tag = $1 } $2 == ref "^{}" { peeled = $1 } END { print (peeled ? peeled : tag) }' <<< "$refs")"
@@ -102,13 +109,15 @@ jobs:
             fi
           fi
           if release_assets="$(gh release view "$tag" --json assets --jq '.assets[].name')"; then
-            if ! grep -Fxq "$asset" <<< "$release_assets"; then
-              gh release upload "$tag" "release-files/$asset"
-            fi
+            for asset in "${assets[@]}"; do
+              if ! grep -Fxq "${asset##*/}" <<< "$release_assets"; then
+                gh release upload "$tag" "$asset"
+              fi
+            done
           else
             args=(--target "$GITHUB_SHA")
             if [[ -n "$refs" ]]; then args=(--verify-tag); fi
-            gh release create "$tag" "release-files/$asset" "${args[@]}" --title "PipeTerminal $VERSION" --generate-notes
+            gh release create "$tag" "${assets[@]}" "${args[@]}" --title "PipeTerminal $VERSION" --generate-notes
           fi
 
   publish-gitee:
@@ -123,12 +132,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Download the published EXE
+      - name: Download the published packages
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release download "v$VERSION" --pattern "PipeTerminal-Paid-$VERSION.exe" --dir release-files
+          prefix="PipeTerminal-Paid-$VERSION"
+          gh release download "v$VERSION" --dir release-files \
+            --pattern "$prefix.exe" --pattern "$prefix-Portable.zip" --pattern "$prefix-Setup.exe"
       - name: Publish to Gitee
         env:
           GITEE_REPOSITORY: ${{ vars.GITEE_REPOSITORY }}
@@ -139,4 +150,6 @@ jobs:
             echo '::error::Configure the GITEE_REPOSITORY variable and GITEE_RELEASE_TOKEN secret before publishing.'
             exit 1
           fi
-          python packaging/publish_gitee.py "v$VERSION" "$GITHUB_SHA" "release-files/PipeTerminal-Paid-$VERSION.exe"
+          prefix="release-files/PipeTerminal-Paid-$VERSION"
+          python packaging/publish_gitee.py "v$VERSION" "$GITHUB_SHA" \
+            "$prefix.exe" "$prefix-Portable.zip" "$prefix-Setup.exe"

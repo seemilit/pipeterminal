@@ -1,4 +1,4 @@
-"""Build a portable Windows package in an isolated environment."""
+"""Build Windows packages in an isolated environment."""
 
 import argparse
 import json
@@ -168,12 +168,57 @@ def publish_executable(executable: Path, project_root: Path, name: str, version:
     return destination
 
 
+def find_installer_compiler() -> str:
+    compiler = shutil.which("ISCC.exe")
+    if compiler:
+        return compiler
+    for variable in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"):
+        root = os.environ.get(variable)
+        if root:
+            candidate = Path(root) / ("Programs" if variable == "LOCALAPPDATA" else "") / "Inno Setup 6" / "ISCC.exe"
+            if candidate.is_file():
+                return str(candidate)
+    raise RuntimeError("Install Inno Setup 6 or add ISCC.exe to PATH to build the installer.")
+
+
+def publish_release_formats(
+    executable: Path, package_root: Path, project_root: Path, name: str, version: str,
+    compiler: str, work_root: Path, environment: dict[str, str],
+) -> None:
+    prefix = f"{name}-{version}"
+    installer_name = f"{prefix}-Setup"
+    archive = Path(shutil.make_archive(
+        str(work_root / f"{prefix}-Portable"), "zip",
+        root_dir=package_root.parent, base_dir=package_root.name,
+    ))
+    run_command([
+        compiler, f"/O{work_root}", f"/F{installer_name}",
+        f"/DProductName={name}", f"/DProductVersion={version}", f"/DPackageDir={package_root}",
+        str(PUBLIC_ROOT / "packaging" / "installer.iss"),
+    ], environment)
+    installer = work_root / f"{installer_name}.exe"
+    if not installer.is_file():
+        raise RuntimeError("Inno Setup did not produce the expected installer.")
+
+    dist_root = project_root / "dist"
+    for filename in (f"{prefix}.exe", archive.name, installer.name):
+        if (dist_root / filename).exists():
+            raise RuntimeError(f"Output already exists: {dist_root / filename}")
+    publish_executable(executable, project_root, name, version)
+    for source in (archive, installer):
+        destination = dist_root / source.name
+        shutil.move(source, destination)
+        print(f"Package: {destination}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", required=True)
     parser.add_argument("--project-root", type=Path, default=PUBLIC_ROOT)
     parser.add_argument("--extension-package", action="append", default=[])
-    parser.add_argument("--onefile", action="store_true", help="Publish a single versioned portable EXE")
+    formats = parser.add_mutually_exclusive_group()
+    formats.add_argument("--onefile", action="store_true", help="Publish a single versioned portable EXE")
+    formats.add_argument("--release-formats", action="store_true", help="Publish a standalone EXE, portable ZIP and installer")
     arguments = parser.parse_args()
     if sys.platform != "win32" or sys.version_info < (3, 10):
         parser.error("Use Windows with Python 3.10 or newer (Python 3.12 recommended).")
@@ -193,14 +238,25 @@ def main() -> int:
     try:
         version = version_from_git(PUBLIC_ROOT)
         print(f"PipeTerminal version: {version}", flush=True)
+        compiler = find_installer_compiler() if arguments.release_formats else None
         python = prepare_environment(project_root, environment)
         build_root = project_root / "build" / "packaging"
         work_root = Path(tempfile.mkdtemp(prefix="run-", dir=build_root))
         package_root = build_package(
             python, project_root, arguments.name, arguments.extension_package,
-            work_root, environment, version, onefile=arguments.onefile,
+            work_root, environment, version, onefile=arguments.onefile or arguments.release_formats,
         )
-        if arguments.onefile:
+        if compiler:
+            folder_work_root = work_root / "folder"
+            folder_work_root.mkdir()
+            folder = build_package(
+                python, project_root, "PipeTerminal", arguments.extension_package,
+                folder_work_root, environment, version,
+            )
+            publish_release_formats(
+                package_root, folder, project_root, arguments.name, version, compiler, work_root, environment,
+            )
+        elif arguments.onefile:
             publish_executable(package_root, project_root, arguments.name, version)
         else:
             publish_package(package_root, project_root, arguments.name)
