@@ -28,8 +28,17 @@ Source: "{#PackageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 [Tasks]
 Name: desktopicon; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+#if ProductName == "PipeTerminal-Paid"
+[InstallDelete]
+Type: files; Name: "{autoprograms}\{#ProductName}.lnk"
+#endif
+
 [Icons]
+#if ProductName == "PipeTerminal-Paid"
+Name: "{autoprograms}\PipeTerminal"; Filename: "{app}\PipeTerminal.exe"; WorkingDir: "{app}"
+#else
 Name: "{autoprograms}\{#ProductName}"; Filename: "{app}\PipeTerminal.exe"; WorkingDir: "{app}"
+#endif
 Name: "{autodesktop}\{#ProductName}"; Filename: "{app}\PipeTerminal.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
