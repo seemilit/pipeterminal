@@ -31,3 +31,6 @@ Name: desktopicon; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm
 [Icons]
 Name: "{autoprograms}\{#ProductName}"; Filename: "{app}\PipeTerminal.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\{#ProductName}"; Filename: "{app}\PipeTerminal.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\PipeTerminal.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,PipeTerminal}"; Flags: postinstall nowait skipifsilent
