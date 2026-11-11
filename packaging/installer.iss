@@ -7,6 +7,8 @@ DisableDirPage=no
 AppendDefaultDirName=yes
 DisableProgramGroupPage=yes
 ShowLanguageDialog=yes
+LanguageDetectionMethod=none
+UsePreviousLanguage=no
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 UninstallDisplayIcon={app}\PipeTerminal.exe
@@ -43,3 +45,21 @@ Name: "{autodesktop}\{#ProductName}"; Filename: "{app}\PipeTerminal.exe"; Workin
 
 [Run]
 Filename: "{app}\PipeTerminal.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,PipeTerminal}"; Flags: postinstall nowait skipifsilent
+
+[Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ConfigDir: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    ConfigDir := ExpandConstant('{app}\conf');
+    if ForceDirectories(ConfigDir) then
+    begin
+      if not SaveStringToFile(ConfigDir + '\installer-language.txt', AnsiString(ActiveLanguage), False) then
+        Log('Could not save the installer language.');
+    end
+    else
+      Log('Could not create the configuration directory for the installer language.');
+  end;
+end;
