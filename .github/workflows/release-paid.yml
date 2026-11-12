@@ -139,7 +139,7 @@ jobs:
         run: |
           prefix="PipeTerminal-Paid-$VERSION"
           gh release download "v$VERSION" --dir release-files \
-            --pattern "$prefix.exe" --pattern "$prefix-Portable.zip" --pattern "$prefix-Setup.exe"
+            --pattern "$prefix-Portable.zip" --pattern "$prefix-Setup.exe"
       - name: Publish to Gitee
         env:
           GITEE_REPOSITORY: ${{ vars.GITEE_REPOSITORY }}
@@ -152,4 +152,4 @@ jobs:
           fi
           prefix="release-files/PipeTerminal-Paid-$VERSION"
           python packaging/publish_gitee.py "v$VERSION" "$GITHUB_SHA" \
-            "$prefix.exe" "$prefix-Portable.zip" "$prefix-Setup.exe"
+            "$prefix-Portable.zip" "$prefix-Setup.exe"
