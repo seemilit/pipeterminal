@@ -181,8 +181,20 @@ def find_installer_compiler() -> str:
     raise RuntimeError("Install Inno Setup 6 or add ISCC.exe to PATH to build the installer.")
 
 
+def stage_installer_runtime(python: Path, package_root: Path) -> None:
+    qt_root = python.parent.parent / "Lib" / "site-packages" / "PySide6"
+    for name in (
+        "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+        "vcruntime140.dll", "vcruntime140_1.dll",
+    ):
+        source = qt_root / name
+        if not source.is_file():
+            raise RuntimeError(f"PySide6 runtime DLL is missing: {source}")
+        shutil.copy2(source, package_root / name)
+
+
 def publish_release_formats(
-    executable: Path, package_root: Path, project_root: Path, name: str, version: str,
+    python: Path, executable: Path, package_root: Path, project_root: Path, name: str, version: str,
     compiler: str, work_root: Path, environment: dict[str, str],
 ) -> None:
     prefix = f"{name}-{version}"
@@ -191,6 +203,8 @@ def publish_release_formats(
         str(work_root / f"{prefix}-Portable"), "zip",
         root_dir=package_root.parent, base_dir=package_root.name,
     ))
+    # Place the runtime beside the installed EXE, after the portable ZIP is sealed.
+    stage_installer_runtime(python, package_root)
     run_command([
         compiler, f"/O{work_root}", f"/F{installer_name}",
         f"/DProductName={name}", f"/DProductVersion={version}", f"/DPackageDir={package_root}",
@@ -254,7 +268,7 @@ def main() -> int:
                 folder_work_root, environment, version,
             )
             publish_release_formats(
-                package_root, folder, project_root, arguments.name, version, compiler, work_root, environment,
+                python, package_root, folder, project_root, arguments.name, version, compiler, work_root, environment,
             )
         elif arguments.onefile:
             publish_executable(package_root, project_root, arguments.name, version)
