@@ -95,6 +95,10 @@ def powershell_argv(executable, *arguments):
     return [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-OutputFormat", "Text", *arguments]
 
 
+def bash_login_command(command):
+    return "if [ -f ~/.bashrc ]; then . ~/.bashrc; fi; " + command
+
+
 def local_argv(executable, interpreter, path, args):
     if interpreter == "cmd":
         # No CALL re-expansion and no user-supplied arguments in this first version.
@@ -164,6 +168,16 @@ class ExecutionEngine:
             if self.stop.is_set():
                 raise ExecutionError(tr("执行已停止"))
             args = local_argv(executable, values["INTERPRETER"], path, json.loads(values["ARGUMENTS"]))
+            if shell_environment is not None:
+                shell_path = Path(executable).absolute()
+                bash = executable
+                if values["INTERPRETER"] == "sh":
+                    sibling = shell_path.with_name("bash.exe")
+                    bash = str(sibling) if sibling.is_file() else interpreter_path("bash")
+                # Login profiles may change directories. Restore the task's cwd and pass arguments verbatim.
+                # Keep Bash alive as the parent for taskkill /T on Windows.
+                command = bash_login_command('cd -- "$1" || exit; shift; "$@"; exit "$?"')
+                args = [bash, "-lc", command, "pipeterminal", cwd.as_posix(), shell_path.as_posix(), *args[1:]]
             self.log(tr("工作目录：{0}", cwd))
             utf8_script = False
             if values["INTERPRETER"] in {"cmd", "powershell"} and kind.endswith("SCRIPT"):
@@ -205,7 +219,8 @@ class ExecutionEngine:
             while reader.is_alive() or not output.empty() or process.poll() is None:
                 if self.stop.is_set() or (deadline is not None and time.monotonic() >= deadline):
                     if os.name == "nt":
-                        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+                        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], check=True,
+                                       capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
                     else:
                         os.killpg(process.pid, signal.SIGKILL)
                     raise ExecutionError(tr("执行已停止或超时；请检查命令产生的外部影响"))
@@ -257,7 +272,11 @@ class ExecutionEngine:
                 raise ExecutionError(tr("工作目录不存在"))
             interpreter = values["INTERPRETER"]
             # Check fixed executables without running the user's command.
-            self._remote_check(client, "command -v " + interpreter + " >/dev/null && command -v setsid >/dev/null")
+            self._remote_check(client, (
+                'for executable in sh bash setsid; do '
+                'command -v "$executable" >/dev/null || '
+                '{ printf "%s: command not found\\n" "$executable" >&2; exit 127; }; done'
+            ))
             inline = kind.endswith("SCRIPT") and "SCRIPT_CONTENT" in values
             existing = kind.endswith("SCRIPT") and not inline and values.get("SCRIPT_SOURCE", "remote") == "remote"
             if existing:
@@ -288,7 +307,11 @@ class ExecutionEngine:
             pid_path = temporary + "/pid"
             files.append(pid_path)
             invocation = shlex.join([interpreter, path, *json.loads(values["ARGUMENTS"])])
-            job = "echo $$ > " + shlex.quote(pid_path) + "; cd " + shlex.quote(cwd) + " || exit; exec " + invocation
+            login_command = bash_login_command(
+                "cd -- " + shlex.quote(cwd) + " || exit; exec " + invocation
+            )
+            # Record the group leader before Bash starts loading its profiles.
+            job = "echo $$ > " + shlex.quote(pid_path) + " || exit; exec bash -lc " + shlex.quote(login_command)
             # With job control disabled, this background child is not a process-group
             # leader: setsid can exec without forking, and sh can wait for its exit
             # status even on older servers that do not support setsid --wait.
@@ -297,6 +320,8 @@ class ExecutionEngine:
             channel = client.get_transport().open_session(timeout=20)
             channel.set_combine_stderr(True)
             channel.settimeout(1)
+            if self.stop.is_set():
+                raise ExecutionError(tr("执行已停止"))
             # Once submitted, a failed connection must never cause an automatic retry.
             try:
                 channel.exec_command(command)
@@ -304,27 +329,17 @@ class ExecutionEngine:
                 timeout = int(values["TIMEOUT"])
                 deadline = time.monotonic() + timeout if timeout else None
                 while True:
+                    if channel.exit_status_ready() and not channel.recv_ready():
+                        break
+                    if self.stop.is_set() or (deadline is not None and time.monotonic() >= deadline):
+                        self._stop_remote(client, sftp, pid_path)
                     if channel.recv_ready():
                         self.log(decoder.decode(channel.recv(16384)))
                         time.sleep(.01)
-                    elif channel.exit_status_ready():
-                        break
                     elif not client.get_transport().is_active() or channel.closed:
                         raise UnknownRemoteState(tr("远程连接中断，执行状态未知；不会自动重试"))
                     else:
                         time.sleep(.05)
-                    if self.stop.is_set() or (deadline is not None and time.monotonic() >= deadline):
-                        try:
-                            with sftp.open(pid_path) as handle:
-                                pid = handle.read(32).decode().strip()
-                            if not pid.isdigit() or int(pid) <= 1:
-                                raise ValueError()
-                            self._remote_check(client, "/bin/kill -TERM -- -" + pid + " 2>/dev/null || true")
-                            time.sleep(.5)
-                            self._remote_check(client, "/bin/kill -KILL -- -" + pid + " 2>/dev/null || true")
-                        except Exception:
-                            raise UnknownRemoteState(tr("无法确认远程进程已停止，请检查服务器")) from None
-                        raise ExecutionError(tr("已向远程进程组发送停止信号；脱离进程组的服务需要手动检查"))
                 self.log(decoder.decode(b"", final=True))
                 code = channel.recv_exit_status()
                 if code == -1:
@@ -356,7 +371,34 @@ class ExecutionEngine:
                 self.log(tr("保留临时目录：{0}", temporary))
             sftp.close()
 
-    def _remote_check(self, client, command):
+    def _stop_remote(self, client, sftp, pid_path):
+        try:
+            sftp.get_channel().settimeout(5)
+            deadline = time.monotonic() + 1
+            while True:
+                try:
+                    with sftp.open(pid_path) as handle:
+                        pid = handle.read(32).strip()
+                except FileNotFoundError:
+                    pid = b""
+                if pid.isdigit() and int(pid) > 1:
+                    break
+                if time.monotonic() >= deadline:
+                    raise ValueError("Remote process group ID is unavailable")
+                time.sleep(.05)
+            group = "-" + pid.decode("ascii")
+            self._remote_check(client, (
+                "test -x /bin/kill || exit 127; "
+                f"/bin/kill -TERM -- {group} 2>/dev/null || true; sleep 0.5; "
+                f"if /bin/kill -0 -- {group} 2>/dev/null; then /bin/kill -KILL -- {group}; fi"
+            ), cancel_on_stop=False)
+        except Exception as exc:
+            raise UnknownRemoteState(tr("无法确认远程进程已停止，请检查服务器")) from exc
+        raise ExecutionError(tr("已向远程进程组发送停止信号；脱离进程组的服务需要手动检查"))
+
+    def _remote_check(self, client, command, *, cancel_on_stop=True):
+        if cancel_on_stop and self.stop.is_set():
+            raise ExecutionError(tr("执行已停止"))
         channel = client.get_transport().open_session(timeout=20)
         channel.settimeout(20)
         try:
@@ -369,7 +411,7 @@ class ExecutionEngine:
                         data = receive(4096)
                         if len(output) < 65536:
                             output.extend(data[:65536-len(output)])
-                if self.stop.is_set() or time.monotonic() > deadline:
+                if (cancel_on_stop and self.stop.is_set()) or time.monotonic() > deadline:
                     raise ExecutionError(tr("配置检查已停止或超时"))
                 time.sleep(.02)
             if channel.recv_exit_status():

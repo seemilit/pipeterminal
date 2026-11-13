@@ -23,6 +23,7 @@ class ApplicationShell(QWidget):
         super().__init__(parent)
         self.setObjectName("applicationShell")
         self._panel_focus_layout: tuple[list[int], list[int], list[bool]] | None = None
+        self._workspace_mode = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -93,6 +94,12 @@ class ApplicationShell(QWidget):
             [not widget.isHidden() for widget in widgets],
         )
 
+    def set_workspace_mode(self, enabled: bool) -> None:
+        self._workspace_mode = enabled
+        self.editor_container.setVisible(not enabled and not self.panel_focus_mode)
+        if enabled:
+            self.bottom_panel.show()
+
     def set_panel_focus_mode(self, focused: bool) -> None:
         if focused == self.panel_focus_mode:
             return
@@ -115,6 +122,9 @@ class ApplicationShell(QWidget):
             self._panel_focus_layout = None
             for widget, show in zip(widgets, visible):
                 widget.setVisible(show)
+            self.editor_container.setVisible(not self._workspace_mode)
+            if self._workspace_mode:
+                self.bottom_panel.show()
             self.main_splitter.setSizes(main_sizes)
             self.right_splitter.setSizes(right_sizes)
         self.bottom_panel.set_panel_focus(focused)

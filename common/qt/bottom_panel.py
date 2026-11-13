@@ -1,6 +1,6 @@
 """Bottom panel coordinating independent, resizable groups of feature tabs."""
 
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QRect, QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import QApplication, QFrame, QMenu, QRubberBand, QSplitter, QVBoxLayout, QWidget
 
 from .module_page import ModulePage
@@ -11,6 +11,8 @@ from common.i18n import tr
 
 
 class BottomPanel(QFrame):
+    panel_activated = Signal(object)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("bottomPanel")
@@ -20,6 +22,7 @@ class BottomPanel(QFrame):
         self._focused = False
         self._groups: list[PanelTabGroup] = []
         self._active_group = None
+        self._updating_focus = False
         self.setAcceptDrops(True)
         self._drop_preview = QRubberBand(QRubberBand.Shape.Rectangle, self)
         self._drop_preview.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -68,6 +71,8 @@ class BottomPanel(QFrame):
             if rect.contains(point):
                 tab_bar = group.tabBar()
                 tab_rect = QRect(tab_bar.mapTo(self, tab_bar.rect().topLeft()), tab_bar.size())
+                tab_rect.setLeft(rect.left())
+                tab_rect.setWidth(rect.width())
                 side = "center" if tab_rect.contains(point) else "left" if point.x() < rect.left() + rect.width() // 2 else "right"
                 if source is group and (side == "center" or source.panel_count() < 2):
                     return None
@@ -132,14 +137,14 @@ class BottomPanel(QFrame):
             return
         self._active_group = group
         panel = group.currentWidget()
-        if self._focused and isinstance(panel, ModulePage):
-            panel.set_panel_focus(True)
+        if panel in self._panels.values():
+            self.panel_activated.emit(panel)
 
     def _track_focus(self, _old, current) -> None:
-        if current is not None:
+        if current is not None and not self._updating_focus:
             for group in self._groups:
                 if current is group or group.isAncestorOf(current):
-                    self._active_group = group
+                    self._activate_group(group)
                     break
 
     def _request_new_panel(self, panel: QWidget) -> None:
@@ -171,9 +176,16 @@ class BottomPanel(QFrame):
 
     def set_panel_focus(self, focused: bool) -> None:
         self._focused = focused
-        for panel in self._panels.values():
-            if isinstance(panel, ModulePage):
-                panel.set_panel_focus(focused)
+        current = QApplication.focusWidget()
+        self._updating_focus = True
+        try:
+            for panel in self._panels.values():
+                if isinstance(panel, ModulePage):
+                    panel.set_panel_focus(focused)
+            if current is not None and current.isVisible():
+                current.setFocus(Qt.FocusReason.OtherFocusReason)
+        finally:
+            self._updating_focus = False
 
     def has_panels(self) -> bool:
         return bool(self._panels)
@@ -185,9 +197,16 @@ class BottomPanel(QFrame):
         panel.windowTitleChanged.disconnect(self._update_panel_title)
         group = self._group_for_panel(panel)
         if group is not None:
-            group.take_panel(panel)
-            panel.setParent(self)
+            blocker = QSignalBlocker(group)
+            self._updating_focus = True
+            try:
+                group.take_panel(panel)
+                panel.setParent(self)
+            finally:
+                self._updating_focus = False
+                del blocker
             self._remove_empty_groups()
+            self._activate_group(self.tabs)
 
     def show_panel(self, panel_id: str) -> None:
         panel = self._panels[panel_id]
@@ -196,6 +215,7 @@ class BottomPanel(QFrame):
             self._active_group = group
             group.setCurrentWidget(panel)
             group.show()
+            self._activate_group(group)
 
     def _show_tab_menu(self, panel: QWidget, position) -> None:
         group = self._group_for_panel(panel)
@@ -274,11 +294,19 @@ class BottomPanel(QFrame):
         if source is None or source is target or target not in self._groups:
             return
         name = source.tabText(source.indexOf(panel))
-        source.take_panel(panel)
-        target.add_panel(name, panel)
-        self._active_group = target
-        target.setCurrentWidget(panel)
+        source_blocker = QSignalBlocker(source)
+        target_blocker = QSignalBlocker(target)
+        self._updating_focus = True
+        try:
+            source.take_panel(panel)
+            target.add_panel(name, panel)
+            self._active_group = target
+            target.setCurrentWidget(panel)
+        finally:
+            self._updating_focus = False
+            del source_blocker, target_blocker
         self._remove_empty_groups()
+        self._activate_group(target)
 
     def _remove_empty_groups(self) -> None:
         for group in tuple(self._groups):

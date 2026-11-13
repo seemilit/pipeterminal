@@ -38,6 +38,8 @@ from .upload import STEP_LABELS as UPLOAD_LABELS, UploadDialog
 
 
 class TaskPage(ModulePage):
+    uses_panel_workspace = True
+
     def __init__(self, store: TaskStore) -> None:
         super().__init__()
         self.store = store
@@ -228,6 +230,7 @@ class TaskPage(ModulePage):
         self.output_button.toggled.connect(self.output_view.setVisible)
         layout.addWidget(self.output_view, 1)
         self._views_ready = True
+        self.new_panel_requested.connect(self.create_task)
         self._update_state()
 
     def bind_registry(self, registry):
@@ -386,6 +389,7 @@ class TaskPage(ModulePage):
             self.output_button.setChecked(False)
         self.output_view.setVisible(has_output and self.output_button.isChecked())
         self.title.setText(self.current_name if self.current_name is not None else tr("任务"))
+        self.setWindowTitle(self.title.text() + (" *" if self._dirty else ""))
         self.notice.setText(tr("步骤数量：{0}", len(self._document["steps"])) if self._document is not None else tr("暂无任务"))
         editable = self._document is not None and not self._running
         self.add_step.setEnabled(editable)
@@ -929,7 +933,13 @@ class TaskPage(ModulePage):
         self._shell_bridge.open(request)
 
     def _stop_workflow(self):
+        if not self._running or self._runner.stop.is_set():
+            return
         self._runner.stop.set()
+        self.stop_button.setEnabled(False)
+        message = tr("正在停止，请等待执行结束")
+        self._log(message)
+        self.status_changed.emit(message)
         if self._conflict_dialog is not None:
             dialog = self._conflict_dialog
             dialog.reject()
@@ -997,6 +1007,9 @@ class TaskPage(ModulePage):
             return True
         return False
 
+    def can_close(self) -> bool:
+        return self.can_leave()
+
     def _execute_from_step(self, index):
         self.execute_task(start_at=index)
 
@@ -1038,6 +1051,7 @@ class TaskPage(ModulePage):
         self._output_task_name = self.current_name
         self.output_button.setChecked(True)
         self._running = True
+        self.stop_button.setEnabled(True)
         self.flow.clear_states(waiting_indexes=run_indexes)
         self._update_state()
         try:

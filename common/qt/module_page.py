@@ -7,6 +7,8 @@ from PySide6.QtWidgets import QWidget
 
 
 class ModulePage(QWidget):
+    uses_panel_workspace = False
+
     directory_changed = Signal()
     actions_changed = Signal()
     status_changed = Signal(object)

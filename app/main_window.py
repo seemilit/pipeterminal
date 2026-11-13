@@ -41,6 +41,7 @@ class MainWindow(QMainWindow):
         self.shell.sidebar.module_selected.connect(self._open_module)
         self.shell.sidebar.directory_panel.item_selected.connect(self._select_directory_item)
         self.shell.sidebar.directory_panel.item_activated.connect(self._activate_directory_item)
+        self.shell.bottom_panel.panel_activated.connect(self._activate_workspace_panel)
 
         self.file_actions: dict[str, QAction] = {}
         self._file_action_names: dict[str, str] = {}
@@ -149,7 +150,7 @@ class MainWindow(QMainWindow):
                 raise TypeError(tr("模块页面工厂必须返回 QWidget"))
             if isinstance(page, QDialog):
                 page.setParent(self, Qt.WindowType.Dialog)
-            else:
+            elif not isinstance(page, ModulePage) or not page.uses_panel_workspace:
                 self.shell.pages.add_page(module_id, page)
             bind_registry = getattr(page, "bind_registry", None)
             if callable(bind_registry):
@@ -164,6 +165,10 @@ class MainWindow(QMainWindow):
                     page.bottom_panel_requested.connect(self._show_bottom_panel)
                     page.bottom_panel_removed.connect(self._remove_bottom_panel)
                     page.panel_focus_requested.connect(self._request_panel_focus)
+                    if page.uses_panel_workspace:
+                        page.close_requested.connect(
+                            lambda target=page: self._close_workspace_page(target)
+                        )
             self._module_pages[module_id] = page
         return page
 
@@ -171,7 +176,7 @@ class MainWindow(QMainWindow):
         page = self._module_page("connection")
         return page.open_workflow_shell(name, command, directory=directory)
 
-    def _open_module(self, module_id: str) -> None:
+    def _open_module(self, module_id: str, *, from_panel: bool = False) -> None:
         page = self._module_page(module_id)
         if page is None:
             return
@@ -180,22 +185,61 @@ class MainWindow(QMainWindow):
             page.raise_()
             page.activateWindow()
         else:
-            if self._active_page is not None and self._active_page is not page:
+            if (not from_panel and self._active_page is not None and self._active_page is not page
+                    and not self._active_page.uses_panel_workspace):
                 if not self._active_page.can_leave():
                     self.shell.sidebar.set_active_module(self._current_module_id)
                     return
             self._current_module_id = module_id
+            self._active_page = page if isinstance(page, ModulePage) else None
             if self.shell.panel_focus_mode:
                 self._set_panel_focus_mode(False)
-            self._active_page = page if isinstance(page, ModulePage) else None
             self.shell.sidebar.set_active_module(module_id)
-            self.shell.pages.show_page(module_id)
+            workspace = isinstance(page, ModulePage) and page.uses_panel_workspace
+            self.shell.set_workspace_mode(workspace)
+            if workspace:
+                self._show_workspace_page(module_id, page)
+            else:
+                self.shell.pages.show_page(module_id)
             if self._active_page is not None:
                 self._active_page.activate()
                 if self._window_state is not None:
                     self._window_state.restore_page(module_id, self._active_page)
             self._refresh_directory()
             self._update_file_actions()
+            self._sync_layout_actions()
+
+    def _show_workspace_page(self, module_id: str, page: ModulePage) -> None:
+        bottom = self.shell.bottom_panel
+        panel_id = "module." + module_id
+        blocker = QSignalBlocker(bottom)
+        if not bottom.has_panel(panel_id):
+            bottom.add_panel(panel_id, page.windowTitle() or tr(self.registry.get(module_id).name), page)
+        bottom.show_panel(panel_id)
+        bottom.show()
+        del blocker
+
+    def _activate_workspace_panel(self, panel: QWidget) -> None:
+        if not isinstance(panel, ModulePage) or not panel.uses_panel_workspace:
+            return
+        module_id = next((key for key, page in self._module_pages.items() if page is panel), None)
+        if module_id is None:
+            return
+        if panel is not self._active_page:
+            self._open_module(module_id, from_panel=True)
+        elif self.shell.panel_focus_mode:
+            self._set_panel_focus_mode(False)
+
+    def _close_workspace_page(self, page: ModulePage) -> None:
+        if not page.can_leave():
+            return
+        panel_id = self.shell.bottom_panel.panel_id(page)
+        if panel_id is None:
+            return
+        self._remove_bottom_panel(panel_id)
+        if self._active_page is page:
+            # Keep the cached editor and its output alive when its tab is closed.
+            self._open_module("connection")
 
     def _refresh_directory(self, page: ModulePage | None = None) -> None:
         if page is not None and page is not self._active_page:
@@ -246,6 +290,10 @@ class MainWindow(QMainWindow):
             self.shell.status_label.setText(message)
 
     def _set_bottom_panel_visible(self, visible: bool) -> None:
+        if (not visible and self.shell.bottom_panel.has_panels()
+                and self._active_page is not None and self._active_page.uses_panel_workspace):
+            self._sync_layout_actions()
+            return
         if not visible and self.shell.panel_focus_mode:
             self._set_panel_focus_mode(False)
         self.bottom_panel_action.setText(tr("隐藏交互窗口") if visible else tr("显示交互窗口"))
@@ -274,6 +322,9 @@ class MainWindow(QMainWindow):
             action.setChecked(not widget.isHidden())
             del blocker
         self.sidebar_action.setEnabled(not self.shell.panel_focus_mode)
+        self.bottom_panel_action.setEnabled(
+            self._active_page is None or not self._active_page.uses_panel_workspace
+        )
         self.bottom_panel_action.setText(
             tr("显示交互窗口") if self.shell.bottom_panel.isHidden() else tr("隐藏交互窗口")
         )
@@ -300,7 +351,8 @@ class MainWindow(QMainWindow):
         if any(callable(getattr(page, "can_close", None)) and not page.can_close() for page in self._module_pages.values()):
             event.ignore()
             return
-        if self._active_page is not None and not self._active_page.can_leave():
+        if (self._active_page is not None and not self._active_page.uses_panel_workspace
+                and not self._active_page.can_leave()):
             event.ignore()
             return
         if self._window_state is not None:

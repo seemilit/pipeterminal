@@ -54,7 +54,7 @@ class ProbeDialog(QDialog):
         layout.addWidget(log_viewer, 1)
         row = QHBoxLayout()
         self.stop_button = QPushButton(tr("停止"))
-        self.stop_button.clicked.connect(self.worker.stop.set)
+        self.stop_button.clicked.connect(self._request_stop)
         row.addStretch()
         row.addWidget(self.stop_button)
         self.close_button = QPushButton(tr("关闭"))
@@ -81,10 +81,15 @@ class ProbeDialog(QDialog):
         self.stop_button.setEnabled(False)
         self.close_button.setEnabled(True)
 
+    def _request_stop(self):
+        if self.running and not self.worker.stop.is_set():
+            self.worker.stop.set()
+            self.stop_button.setEnabled(False)
+            self._log(tr("正在停止，请等待执行结束"))
+
     def reject(self):
         if self.running:
-            self.worker.stop.set()
-            self.output.appendPlainText(str(tr("正在停止，请等待执行结束")))
+            self._request_stop()
         else:
             super().reject()
 
