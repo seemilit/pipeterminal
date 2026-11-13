@@ -167,6 +167,7 @@ class TaskPage(ModulePage):
         self.flow.step_activated.connect(self._edit_step)
         self.flow.position_changed.connect(self._position_step)
         self.flow.connection_requested.connect(self._connect_steps)
+        self.flow.connection_allowed = self._can_connect_steps
         self.flow.module_dropped.connect(self._insert_module)
         self.flow.module_add_requested.connect(self._add_from_arrow)
         self.flow.node_copy_requested.connect(lambda index: self._copy_step(index))
@@ -174,6 +175,7 @@ class TaskPage(ModulePage):
         self.flow.run_from_requested.connect(self._execute_from_step)
         self.flow.run_only_requested.connect(self._execute_selected_steps)
         self.flow.edge_delete_requested.connect(self._disconnect_step)
+        self.flow.edge_insert_requested.connect(self._insert_on_edge)
         self.flow.undo_requested.connect(self._restore_edit)
         self.flow.redo_requested.connect(lambda: self._restore_edit(True))
         self.flow.setToolTip(
@@ -375,6 +377,7 @@ class TaskPage(ModulePage):
         self.add_step.setEnabled(editable)
         self.library.setEnabled(editable)
         self.flow.set_editable(editable)
+        self.flow.parallel_enabled = self._parallel_scheduler() is not None
         self.parameters.form_widget.setEnabled(editable)
         self.parameters.execution.setEnabled(editable)
         self.parameters.upload.setEnabled(editable)
@@ -543,19 +546,21 @@ class TaskPage(ModulePage):
         if len(self._document["steps"]) >= limit and self._parallel_scheduler() is None:
             raise WorkflowUpgradeRequired(tr("免费版每个流程最多添加 {0} 个节点，增加更多节点需要付费授权", limit))
 
-    def _insert_connected_node(self, step, source_index, direction):
+    def _insert_connected_node(self, step, source_index, direction, replace_link=None):
         self._check_node_limit()
         steps = self._document["steps"]
         source = START if source_index == -1 else steps[source_index]["node_id"]
         incoming = {"left": "right", "right": "left", "top": "bottom", "bottom": "top"}[direction]
         links = self._document["links"]
         existing = [link for link in links if link[0] == source]
-        insert_inline = self._parallel_scheduler() is None and bool(existing)
-        if insert_inline and len(existing) > 1:
+        insert_inline = replace_link is not None or self._parallel_scheduler() is None and bool(existing)
+        if self._parallel_scheduler() is None and len(existing) > 1:
             raise WorkflowUpgradeRequired(tr(PARALLEL_REQUIRED))
+        if replace_link is not None and replace_link not in existing:
+            raise ValueError(tr("连线已变化，请重新选择"))
         self._remember_edit()
         if insert_inline:
-            old = existing[0]
+            old = replace_link if replace_link is not None else existing[0]
             links.remove(old)
             append_node(self._document, step, source, direction, incoming)
             links.append([step["node_id"], old[1], "", old[3]])
@@ -565,12 +570,23 @@ class TaskPage(ModulePage):
     def _add_from_arrow(self, index, direction, kind):
         self._edit_step(adding=True, source_index=index, direction=direction, step_type=kind)
 
+    def _insert_on_edge(self, endpoints, kind):
+        if self._running or self._document is None:
+            return
+        link = next((link for link in self._document["links"] if tuple(link[:2]) == endpoints), None)
+        if link is None:
+            return
+        source_index = -1 if link[0] == START else next(index for index, step in enumerate(self._document["steps"]) if step["node_id"] == link[0])
+        direction = self.flow.edge_output_port(endpoints)
+        position = self.flow.insertion_position(endpoints, source_index, direction)
+        self._edit_step(adding=True, source_index=source_index, direction=direction, step_type=kind, position=position, replace_link=list(link))
+
     def _artifacts_changed(self, artifacts):
         self._artifacts = artifacts
         self.parameters.upload.artifact_results = artifacts
         self.parameters.upload.refresh_jars()
 
-    def _edit_step(self, *, adding=False, source_index=None, direction="bottom", step_type="MERGE_BRANCH", position=None):
+    def _edit_step(self, *, adding=False, source_index=None, direction="bottom", step_type="MERGE_BRANCH", position=None, replace_link=None):
         if self._running or self._document is None:
             return
         item = self.steps.currentItem()
@@ -600,7 +616,7 @@ class TaskPage(ModulePage):
                     step = {"type": step_type, "properties": values}
                     step["position"] = position if position is not None else self.flow.next_module_position(source_index, direction)
                     try:
-                        self._insert_connected_node(step, source_index, direction)
+                        self._insert_connected_node(step, source_index, direction, replace_link)
                     except ValueError as error:
                         self._show_error(error)
                         return
@@ -653,6 +669,22 @@ class TaskPage(ModulePage):
                 self._document["steps"][index]["position"] = position
             self._dirty = True
             self._update_state()
+
+    def _can_connect_steps(self, source, target):
+        if self._running or self._document is None or source == target:
+            return False
+        steps = self._document["steps"]
+        if not -1 <= source < len(steps) or not 0 <= target < len(steps):
+            return False
+        source_id = START if source == -1 else steps[source]["node_id"]
+        target_id = steps[target]["node_id"]
+        if any(link[:2] == [source_id, target_id] for link in self._document["links"]):
+            return True
+        try:
+            validate_connection(self._document, source_id, target_id, self._parallel_scheduler() is not None)
+        except ValueError:
+            return False
+        return True
 
     def _connect_steps(self, source, target, output_port, input_port):
         if self._running or self._document is None or source == target:
@@ -809,6 +841,7 @@ class TaskPage(ModulePage):
                 _steps, issues = prepare_workflow(
                     self._document, self.execution_services.store, indexes=order, check_connections=False,
                     predecessors=predecessors if check_connections else None,
+                    artifacts=self._artifacts if indexes is not None or start_at is not None else None,
                 )
         except (OSError, ValueError) as error:
             self._show_error(error)
@@ -995,6 +1028,7 @@ class TaskPage(ModulePage):
             self._runner.start(
                 deepcopy(self._document), indexes=indexes, start_at=start_at,
                 check_connections=check_connections, scheduler=self._parallel_scheduler(),
+                artifacts=self._artifacts,
             )
         except RuntimeError as exc:
             self._finished(False, tr("任务失败：{0}", error_message(exc)))

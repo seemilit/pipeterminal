@@ -35,31 +35,39 @@ class TaskRunner(QObject):
         self.stop = Event()
         self._conflict_lock = Lock()
 
-    def start(self, document, *, indexes=None, start_at=None, check_connections=True, scheduler=None):
+    def start(self, document, *, indexes=None, start_at=None, check_connections=True, scheduler=None, artifacts=None):
         self.stop.clear()
+        available = {name: tuple(paths) for name, paths in (artifacts or {}).items()} if indexes is not None or start_at is not None else {}
         Thread(
-            target=self._run, args=(document, indexes, start_at, check_connections, scheduler),
+            target=self._run, args=(document, indexes, start_at, check_connections, scheduler, available),
             name="task-workflow", daemon=True,
         ).start()
 
-    def _run(self, document, indexes=None, start_at=None, check_connections=True, scheduler=None):
-        self.artifacts_ready.emit({})
+    def _run(self, document, indexes=None, start_at=None, check_connections=True, scheduler=None, artifacts=None):
+        artifacts = dict(artifacts or {})
         try:
             ensure_graph(document)
             order, predecessors, issues = execution_plan(
                 document, indexes=indexes, start_at=start_at,
                 check_connections=check_connections, parallel=scheduler is not None,
             )
+            for index in order:
+                step = document["steps"][index]
+                if step["type"] == "MAVEN_BUILD":
+                    name = step.get("properties", {}).get("ARTIFACT_NAME", "artifact")
+                    if isinstance(name, str):
+                        artifacts.pop(name.strip(), None)
+            self.artifacts_ready.emit(dict(artifacts))
             steps = []
             if not issues:
                 steps, issues = prepare_workflow(
                     document, self.services.store if self.services else None,
                     indexes=order, check_connections=False,
                     predecessors=predecessors if check_connections else None,
+                    artifacts=artifacts,
                 )
             if issues:
                 raise ValueError("\n".join(str(tr("第 {0} 步：{1}", index + 1, message)) if index >= 0 else message for index, message in issues))
-            artifacts = {}
             artifacts_lock = Lock()
 
             def execute(index):

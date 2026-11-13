@@ -107,8 +107,9 @@ def local_argv(executable, interpreter, path, args):
 
 
 class ExecutionEngine:
-    def __init__(self, services, log, stop):
+    def __init__(self, services, log, stop, *, output_decoder=None):
         self.services, self.log, self.stop = services, log, stop
+        self._output_decoder = output_decoder
 
     def execute(self, kind, properties):
         values = validate(kind, properties)
@@ -198,7 +199,7 @@ class ExecutionEngine:
                 process.stdout.close()
         reader = Thread(target=read, daemon=True)
         reader.start()
-        decoder = codecs.getincrementaldecoder(encoding or locale.getpreferredencoding(False))(errors="replace")
+        decoder = self._output_decoder or codecs.getincrementaldecoder(encoding or locale.getpreferredencoding(False))(errors="replace")
         deadline = time.monotonic() + timeout if timeout else None
         try:
             while reader.is_alive() or not output.empty() or process.poll() is None:
@@ -288,7 +289,11 @@ class ExecutionEngine:
             files.append(pid_path)
             invocation = shlex.join([interpreter, path, *json.loads(values["ARGUMENTS"])])
             job = "echo $$ > " + shlex.quote(pid_path) + "; cd " + shlex.quote(cwd) + " || exit; exec " + invocation
-            command = "exec setsid --wait sh -c " + shlex.quote(job) + " </dev/null"
+            # With job control disabled, this background child is not a process-group
+            # leader: setsid can exec without forking, and sh can wait for its exit
+            # status even on older servers that do not support setsid --wait.
+            launcher = "set +m; setsid sh -c " + shlex.quote(job) + ' </dev/null & task_pid=$!; wait "$task_pid"'
+            command = "exec sh -c " + shlex.quote(launcher)
             channel = client.get_transport().open_session(timeout=20)
             channel.set_combine_stderr(True)
             channel.settimeout(1)

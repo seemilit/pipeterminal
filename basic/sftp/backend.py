@@ -243,6 +243,28 @@ def _upload_file(sftp, task, entry, progress, confirm, *, open_source=None) -> b
                 pass
 
 
+def _validate_download_source(sftp, task, entry, output, signature):
+    # Appends are allowed; truncation, same-size edits and sampled replacement
+    # must not publish a successful download of mixed log contents.
+    check_cancelled(task.context, task.cancel)
+    attributes = sftp.lstat(entry.source)
+    if not stat.S_ISREG(attributes.st_mode or 0):
+        raise ValueError(tr("不支持传输链接或特殊文件：{0}", entry.source))
+    with sftp.open(entry.source, "rb") as latest:
+        info = latest.stat()
+        size = int(info.st_size or 0)
+        if size < entry.size or (size == signature["size"] and int(info.st_mtime or 0) != signature["mtime"]):
+            raise ValueError(tr("文件大小发生变化，请重试：{0}", entry.source))
+        for start in dict.fromkeys((0, max(0, entry.size - 65536))):
+            check_cancelled(task.context, task.cancel)
+            length = min(65536, entry.size - start)
+            latest.seek(start)
+            output.seek(start)
+            expected = latest.read(length)
+            if len(expected) != length or output.read(length) != expected:
+                raise ValueError(tr("文件大小发生变化，请重试：{0}", entry.source))
+
+
 def _download_file(sftp, task, entry, root, progress, confirm) -> bool:
     if task.file_handler is not None:
         return task.file_handler.download_file(sftp, task, entry, root, progress, confirm)
@@ -256,11 +278,26 @@ def _download_file(sftp, task, entry, root, progress, confirm) -> bool:
     _local_target(root, target)
     temporary = target.with_name(f".pipeterminal-download-{uuid4().hex}.part")
     try:
-        with temporary.open("xb") as output:
-            sftp.getfo(
-                entry.source, output, callback=lambda current, _total: progress(current),
-                max_concurrent_prefetch_requests=16,
-            )
+        with sftp.open(entry.source, "rb") as source, temporary.open("x+b") as output:
+            info = source.stat()
+            signature = {"size": int(info.st_size or 0), "mtime": int(info.st_mtime or 0)}
+            if signature["size"] < entry.size:
+                raise ValueError(tr("文件大小发生变化，请重试：{0}", entry.source))
+            if entry.size:
+                source.prefetch(file_size=entry.size, max_concurrent_requests=16)
+            current = 0
+            while current < entry.size:
+                check_cancelled(task.context, task.cancel)
+                chunk = source.read(min(65536, entry.size - current))
+                if not chunk:
+                    raise ValueError(tr("文件大小发生变化，请重试：{0}", entry.source))
+                output.write(chunk)
+                current += len(chunk)
+                progress(current)
+            output.flush()
+            if int(source.stat().st_size or 0) < entry.size:
+                raise ValueError(tr("文件大小发生变化，请重试：{0}", entry.source))
+            _validate_download_source(sftp, task, entry, output, signature)
         if temporary.stat().st_size != entry.size:
             raise ValueError(tr("文件大小发生变化，请重试：{0}", entry.source))
         check_cancelled(task.context, task.cancel)

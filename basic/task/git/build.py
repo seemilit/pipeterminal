@@ -1,4 +1,5 @@
 """Local Maven packaging as an independent workflow step."""
+import codecs
 import os
 import shlex
 import shutil
@@ -32,6 +33,34 @@ def validate_build(properties):
     return path, seconds
 
 
+class MavenOutputDecoder:
+    """Decode UTF-8 Maven lines and legacy Java's Windows ANSI diagnostics."""
+
+    def __init__(self):
+        self._pending = b""
+
+    def decode(self, data, final=False):
+        self._pending += data
+        parts = []
+        while self._pending:
+            newline = self._pending.find(b"\n", 0, 65536)
+            complete = newline >= 0 or (final and len(self._pending) <= 65536)
+            if not complete and len(self._pending) <= 65536:
+                break
+            length = newline + 1 if newline >= 0 else min(len(self._pending), 65536)
+            chunk = self._pending[:length]
+            decoder = codecs.getincrementaldecoder("utf-8-sig")(errors="strict")
+            try:
+                text = decoder.decode(chunk, final=complete)
+            except UnicodeDecodeError:
+                decoder = codecs.getincrementaldecoder("mbcs")(errors="replace")
+                text = decoder.decode(chunk, final=complete)
+            pending, _state = decoder.getstate()
+            self._pending = pending + self._pending[length:]
+            parts.append(text)
+        return "".join(parts)
+
+
 class MavenBuild:
     def __init__(self, services, log, stop):
         self.services, self.log, self.stop = services, log, stop
@@ -53,7 +82,8 @@ class MavenBuild:
         else:
             command = ("sh " if wrapper.is_file() else "") + shlex.quote(executable) + " clean package"
         self.log(tr("开始打包：{0}", str(project)))
-        ExecutionEngine(self.services, self.log, self.stop).execute("LOCAL_COMMAND", {
+        decoder = MavenOutputDecoder() if windows else None
+        ExecutionEngine(self.services, self.log, self.stop, output_decoder=decoder).execute("LOCAL_COMMAND", {
             "INTERPRETER": "cmd" if windows else "sh", "WORKING_DIRECTORY": str(project),
             "COMMAND": command, "TIMEOUT": str(timeout),
         })

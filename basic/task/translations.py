@@ -377,5 +377,13 @@ ROWS += (
     ("本次执行须包含对应的打包节点", "Include the matching build node in this run", "本次執行須包含對應的打包節點", "今回の実行に対応するビルドノードを含めてください", "이번 실행에 해당 빌드 노드를 포함하세요", "Incluye el nodo de compilación correspondiente en esta ejecución"),
 )
 
+ROWS += (
+    ("插入节点", "Insert node", "插入節點", "ノードを挿入", "노드 삽입", "Insertar nodo"),
+    ("新增并行分支", "Add parallel branch", "新增平行分支", "並列分岐を追加", "병렬 분기 추가", "Añadir rama paralela"),
+    ("添加下一步", "Add next step", "新增下一步", "次のステップを追加", "다음 단계 추가", "Añadir siguiente paso"),
+    ("连线已变化，请重新选择", "The connection has changed. Select it again.", "連線已變更，請重新選擇", "接続が変更されました。選択し直してください。", "연결이 변경되었습니다. 다시 선택하세요.", "La conexión ha cambiado. Selecciónala de nuevo."),
+    ("点击＋插入节点；选中连线后按 Delete 删除", "Click + to insert a node; select the connection and press Delete to remove it", "點擊＋插入節點；選取連線後按 Delete 刪除", "＋でノードを挿入。接続を選択して Delete で削除", "+를 클릭하여 노드 삽입; 연결을 선택하고 Delete 키로 삭제", "Pulsa + para insertar un nodo; selecciona la conexión y pulsa Supr para eliminarla"),
+)
+
 for index, language in enumerate(("en", "zh_TW", "ja", "ko", "es"), 1):
     MESSAGES[language].update({row[0]: row[index] for row in ROWS})

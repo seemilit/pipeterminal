@@ -21,13 +21,18 @@ def _preceding_build(steps, index, project):
     return None
 
 
-def prepare_workflow(document, server_store=None, *, indexes=None, check_connections=True, predecessors=None):
+def prepare_workflow(document, server_store=None, *, indexes=None, check_connections=True, predecessors=None, artifacts=None):
     steps = deepcopy(document.get("steps", []))
     issues, groups = [], {}
     selected = set(range(len(steps)) if indexes is None else indexes)
     if not selected or not selected.issubset(range(len(steps))):
         return steps, [(-1, str(tr("任务为空或包含尚未支持的流程")))]
     partial = len(selected) != len(steps)
+    selected_builds = {
+        steps[index].get("properties", {}).get("ARTIFACT_NAME", "artifact").strip()
+        for index in selected if steps[index].get("type") == "MAVEN_BUILD"
+        and isinstance(steps[index].get("properties", {}).get("ARTIFACT_NAME", "artifact"), str)
+    }
     checked_servers = {}
     servers = set(server_store.list_names()) if server_store is not None else None
     order = range(len(steps)) if indexes is None else indexes
@@ -59,7 +64,7 @@ def prepare_workflow(document, server_store=None, *, indexes=None, check_connect
                             producer = _preceding_build(steps, index, project)
                             properties["ARTIFACT_NAME"] = (
                                 steps[producer].get("properties", {}).get("ARTIFACT_NAME", "")
-                                if producer in selected else ""
+                                if producer is not None and (producer in selected or artifacts) else ""
                             )
                         else:
                             matches = [
@@ -70,8 +75,14 @@ def prepare_workflow(document, server_store=None, *, indexes=None, check_connect
                             properties["ARTIFACT_NAME"] = matches[-1] if matches else ""
                     group = groups.get(properties["ARTIFACT_NAME"])
                     if group is None or (predecessors is not None and group[1] not in ancestors[index]):
-                        message = "本次执行须包含对应的打包节点" if partial else "请先添加对应的打包步骤并选择产物组"
-                        raise ValueError(tr(message))
+                        name = properties["ARTIFACT_NAME"]
+                        existing = (artifacts or {}).get(name) if name not in selected_builds else None
+                        if existing:
+                            from .jar_artifact import select_jars
+                            select_jars(existing, properties.get("JAR_FILTER", ""))
+                        else:
+                            message = "本次执行须包含对应的打包节点" if partial else "请先添加对应的打包步骤并选择产物组"
+                            raise ValueError(tr(message))
                 validate_upload(kind, properties)
             elif kind in EXECUTION_LABELS:
                 validate(kind, properties)
@@ -103,6 +114,6 @@ def prepare_workflow(document, server_store=None, *, indexes=None, check_connect
                         checked_servers[name] = ""
                 if checked_servers[name]:
                     raise ValueError(checked_servers[name])
-        except (ValueError, TypeError, KeyError) as error:
+        except (OSError, ValueError, TypeError, KeyError) as error:
             issues.append((index, str(error)))
     return steps, issues
