@@ -385,5 +385,9 @@ ROWS += (
     ("点击＋插入节点；选中连线后按 Delete 删除", "Click + to insert a node; select the connection and press Delete to remove it", "點擊＋插入節點；選取連線後按 Delete 刪除", "＋でノードを挿入。接続を選択して Delete で削除", "+를 클릭하여 노드 삽입; 연결을 선택하고 Delete 키로 삭제", "Pulsa + para insertar un nodo; selecciona la conexión y pulsa Supr para eliminarla"),
 )
 
+ROWS += (
+    ("执行输出", "Run output", "執行輸出", "実行出力", "실행 출력", "Salida de ejecución"),
+)
+
 for index, language in enumerate(("en", "zh_TW", "ja", "ko", "es"), 1):
     MESSAGES[language].update({row[0]: row[index] for row in ROWS})

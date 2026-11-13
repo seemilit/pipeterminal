@@ -52,6 +52,7 @@ class TaskPage(ModulePage):
         self._document: dict | None = None
         self._dirty = False
         self._running = False
+        self._output_task_name = None
         self._log_writer = None
         self._edit_history = EditHistory()
         self._saved_document = None
@@ -149,6 +150,9 @@ class TaskPage(ModulePage):
             button.clicked.connect(lambda _checked=False, handler=callback: handler())
             tools.addWidget(button)
             self.edit_actions[text] = button
+        self.output_button = QPushButton(tr("执行输出"))
+        self.output_button.setCheckable(True)
+        tools.addWidget(self.output_button)
         tools.addStretch()
         layout.addWidget(tools_widget)
         self.undo_notice = QLabel(tr("流程内容超过撤销内存上限，部分操作将无法撤销或重做。"))
@@ -221,6 +225,7 @@ class TaskPage(ModulePage):
         self.output_view = LogViewer(self)
         self.output = self.output_view.text
         self.output.setMaximumBlockCount(3000)
+        self.output_button.toggled.connect(self.output_view.setVisible)
         layout.addWidget(self.output_view, 1)
         self._views_ready = True
         self._update_state()
@@ -325,10 +330,15 @@ class TaskPage(ModulePage):
         try:
             getattr(self.store, operation)(*names)
             if operation == "delete":
+                if self.current_name == self._output_task_name:
+                    self._output_task_name = None
+                    self.output.clear()
                 self.current_name = None
                 self._document = None
                 self._dirty = False
                 self._populate_steps()
+            elif operation == "rename" and names[0] == self._output_task_name:
+                self._output_task_name = names[1]
             self._refresh_directory()
             selected = next(iter(self._names), None) if operation == "delete" else names[-1]
             if selected is not None:
@@ -370,14 +380,18 @@ class TaskPage(ModulePage):
         self.directory_changed.emit()
 
     def _update_state(self) -> None:
-        self.output_view.setVisible(self._running)
+        has_output = self._output_task_name is not None and self.current_name == self._output_task_name
+        self.output_button.setEnabled(has_output)
+        if not has_output:
+            self.output_button.setChecked(False)
+        self.output_view.setVisible(has_output and self.output_button.isChecked())
         self.title.setText(self.current_name if self.current_name is not None else tr("任务"))
         self.notice.setText(tr("步骤数量：{0}", len(self._document["steps"])) if self._document is not None else tr("暂无任务"))
         editable = self._document is not None and not self._running
         self.add_step.setEnabled(editable)
         self.library.setEnabled(editable)
         self.flow.set_editable(editable)
-        self.flow.parallel_enabled = self._parallel_scheduler() is not None
+        self.flow.parallel_enabled = editable and self._parallel_scheduler() is not None
         self.parameters.form_widget.setEnabled(editable)
         self.parameters.execution.setEnabled(editable)
         self.parameters.upload.setEnabled(editable)
@@ -999,7 +1013,6 @@ class TaskPage(ModulePage):
             return
         if not self.save_task(show_message=False):
             return
-        self.output.clear()
         service = self.registry.get_service("log")
         if service is not None:
             try:
@@ -1021,6 +1034,9 @@ class TaskPage(ModulePage):
                 self._log_writer = None
             self._show_error(error)
             return
+        self.output.clear()
+        self._output_task_name = self.current_name
+        self.output_button.setChecked(True)
         self._running = True
         self.flow.clear_states(waiting_indexes=run_indexes)
         self._update_state()
