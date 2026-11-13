@@ -34,6 +34,7 @@ class PathNavigation(QObject):
         self._pid = None
         self._reported_directory = None
         self._quiet_ready = False
+        self._legacy_jump_key = False
         self._jump_snapshot = None
         self._prompt = None
         self._cwd = OrderedDict()
@@ -139,6 +140,7 @@ class PathNavigation(QObject):
         self._current_directory = None
         self._reported_directory = None
         self._quiet_ready = False
+        self._legacy_jump_key = False
         self._jump_snapshot = None
         self.policy.clear()
         self.terminal.enable_path_navigation(False)
@@ -149,7 +151,7 @@ class PathNavigation(QObject):
 
     def _input_queued(self, data: bytes) -> None:
         token = self.session.shell_token()
-        if token is None or not self._quiet_ready or not data.removeprefix(b"\x15").startswith(directory_key(token)):
+        if token is None or not self._quiet_ready or not data.startswith(b"\x15" + directory_key(token, legacy=self._legacy_jump_key) + b"\x1e"):
             self.terminal.engine.note_input(data)
 
     def metadata(self, kind: str, value: str) -> None:
@@ -179,8 +181,10 @@ class PathNavigation(QObject):
                     # The server's full cwd is authoritative even if a custom
                     # prompt cannot be recognized. Associate history separately.
                     self._set_current_directory(directory)
-            elif len(parts) == 3 and parts[1] == "PipeTerminalReady":
-                self._quiet_ready = True
+            elif parts[1] == "PipeTerminalReady":
+                mode = parts[3] if len(parts) == 4 else ""
+                self._quiet_ready = mode in ("", "legacy")
+                self._legacy_jump_key = mode == "legacy"
             elif len(parts) == 4 and parts[1] == "PipeTerminalJump":
                 snapshot = self._jump_snapshot
                 if snapshot is not None and parts[3] == snapshot.directory:
@@ -248,7 +252,7 @@ class PathNavigation(QObject):
             self.status_changed.emit(tr("当前 Shell 尚未启用静默目录跳转，请重新连接"))
             return False
         self._jump_snapshot = snapshot
-        if self.session.send(directory_input(token, snapshot.directory)):
+        if self.session.send(directory_input(token, snapshot.directory, legacy=self._legacy_jump_key)):
             return True
         self._jump_snapshot = None
         return False

@@ -38,7 +38,7 @@ class ShellCommandObserver(QObject):
         token = self.session.shell_token()
         if self._closed or token is None or self._active is not None:
             return
-        if data.removeprefix(b"\x15").startswith(directory_key(token)):
+        if any(data.startswith(b"\x15" + directory_key(token, legacy=legacy) + b"\x1e") for legacy in (False, True)):
             return
         if b"\r" in data or b"\n" in data:
             self._submitted = True
