@@ -855,7 +855,7 @@ class TaskPage(ModulePage):
                 _steps, issues = prepare_workflow(
                     self._document, self.execution_services.store, indexes=order, check_connections=False,
                     predecessors=predecessors if check_connections else None,
-                    artifacts=self._artifacts if indexes is not None or start_at is not None else None,
+                    allow_existing_jars=indexes is not None or start_at is not None,
                 )
         except (OSError, ValueError) as error:
             self._show_error(error)

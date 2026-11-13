@@ -4,6 +4,7 @@ from common.i18n import tr
 from .schema import STEP_LABELS
 from .git.schema import POLICIES, STEP_FIELDS
 from .git.build import validate_build
+from .graph import START, graph_structure
 from .execution.schema import STEP_LABELS as EXECUTION_LABELS, validate
 from .upload import STEP_LABELS as UPLOAD_LABELS, validate_upload
 from .health import validate_health
@@ -21,7 +22,39 @@ def _preceding_build(steps, index, project):
     return None
 
 
-def prepare_workflow(document, server_store=None, *, indexes=None, check_connections=True, predecessors=None, artifacts=None):
+def _local_jar_build(document, index, name, project):
+    ids, _, incoming = graph_structure(document)
+    ancestors = set()
+    pending = list(incoming[ids[index]])
+    while pending:
+        node = pending.pop()
+        if node != START and node not in ancestors:
+            ancestors.add(node)
+            pending.extend(incoming[node])
+
+    matches = []
+    for step in document["steps"]:
+        if step.get("type") != "MAVEN_BUILD" or step["node_id"] not in ancestors:
+            continue
+        properties = step.get("properties", {})
+        candidate = properties.get("ARTIFACT_NAME", "artifact")
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        if name and name != candidate.strip():
+            continue
+        if not name and project and project != properties.get("PROJECT_PATH"):
+            continue
+        matches.append((candidate.strip(), properties))
+    if not matches:
+        raise ValueError(tr("请先添加对应的打包步骤并选择产物组"))
+    name, properties = matches[-1]
+    if sum(candidate == name for candidate, _ in matches) > 1:
+        raise ValueError(tr("产物名称重复：{0}", name))
+    project, _ = validate_build({**properties, "BUILD_TIMEOUT": "600"})
+    return name, (project, properties.get("JAR_FILTER", ""))
+
+
+def prepare_workflow(document, server_store=None, *, indexes=None, check_connections=True, predecessors=None, allow_existing_jars=False):
     steps = deepcopy(document.get("steps", []))
     issues, groups = [], {}
     selected = set(range(len(steps)) if indexes is None else indexes)
@@ -58,13 +91,14 @@ def prepare_workflow(document, server_store=None, *, indexes=None, check_connect
                 groups[name] = (properties.get("PROJECT_PATH", ""), index)
             elif kind in UPLOAD_LABELS:
                 if kind == "UPLOAD_JAR":
+                    step.pop("local_jar_build", None)
                     if not properties.get("ARTIFACT_NAME"):
                         project = properties.get("UPLOAD_SOURCE", "")
                         if partial and predecessors is None:
                             producer = _preceding_build(steps, index, project)
                             properties["ARTIFACT_NAME"] = (
-                                steps[producer].get("properties", {}).get("ARTIFACT_NAME", "")
-                                if producer is not None and (producer in selected or artifacts) else ""
+                                steps[producer].get("properties", {}).get("ARTIFACT_NAME", "artifact")
+                                if producer in selected else ""
                             )
                         else:
                             matches = [
@@ -76,10 +110,12 @@ def prepare_workflow(document, server_store=None, *, indexes=None, check_connect
                     group = groups.get(properties["ARTIFACT_NAME"])
                     if group is None or (predecessors is not None and group[1] not in ancestors[index]):
                         name = properties["ARTIFACT_NAME"]
-                        existing = (artifacts or {}).get(name) if name not in selected_builds else None
-                        if existing:
-                            from .jar_artifact import select_jars
-                            select_jars(existing, properties.get("JAR_FILTER", ""))
+                        if allow_existing_jars and name not in selected_builds:
+                            name, source = _local_jar_build(document, index, name, properties.get("UPLOAD_SOURCE", ""))
+                            if name in selected_builds:
+                                raise ValueError(tr("请先添加对应的打包步骤并选择产物组"))
+                            properties["ARTIFACT_NAME"] = name
+                            step["local_jar_build"] = source
                         else:
                             message = "本次执行须包含对应的打包节点" if partial else "请先添加对应的打包步骤并选择产物组"
                             raise ValueError(tr(message))

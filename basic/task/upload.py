@@ -203,7 +203,7 @@ class UploadParameterEditor(QWidget):
         self.kind = step["type"]
         self.source_label.setText(tr("项目目录" if self.kind == "UPLOAD_JAR" else "本地来源"))
         self.source.setPlaceholderText(tr("留空使用前面最近一次打包的项目目录") if self.kind == "UPLOAD_JAR" else "")
-        self.hint.setText(tr("选择前面打包步骤的产物组；留空筛选则上传整组，上传时不重新扫描目录。" if self.kind == "UPLOAD_JAR" else "上传时保留原名称；文件夹包含自身及全部子目录。失败时停止流程，已完成的文件不会回退。"))
+        self.hint.setText(tr("选择前面打包步骤的产物组；单独执行时查找该项目目录中已有的 JAR。" if self.kind == "UPLOAD_JAR" else "上传时保留原名称；文件夹包含自身及全部子目录。失败时停止流程，已完成的文件不会回退。"))
         values = {**DEFAULTS, **step.get("properties", {})}
         jar = self.kind == "UPLOAD_JAR"
         self.source_label.setVisible(not jar)
@@ -253,7 +253,7 @@ class UploadParameterEditor(QWidget):
             return
         group = self.artifact_results.get(self.artifact.currentData())
         if not group:
-            self.jar_preview.setText(tr("产物将在对应打包步骤成功后生成"))
+            self.jar_preview.setText(tr("单独执行时检查本地 JAR；完整流程使用本次打包产物。"))
             return
         from .jar_artifact import select_jars
         try:

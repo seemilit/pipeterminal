@@ -11,6 +11,7 @@ from common.i18n.errors import error_message
 from .git.merge import GitMergePush
 from .git.operations import GitWorkflow
 from .git.build import MavenBuild
+from .jar_artifact import detect_jars
 from .schema import STEP_LABELS
 from .execution.schema import STEP_LABELS as EXECUTION_LABELS
 from .execution.engine import ExecutionEngine
@@ -64,7 +65,7 @@ class TaskRunner(QObject):
                     document, self.services.store if self.services else None,
                     indexes=order, check_connections=False,
                     predecessors=predecessors if check_connections else None,
-                    artifacts=artifacts,
+                    allow_existing_jars=indexes is not None or start_at is not None,
                 )
             if issues:
                 raise ValueError("\n".join(str(tr("第 {0} 步：{1}", index + 1, message)) if index >= 0 else message for index, message in issues))
@@ -104,6 +105,9 @@ class TaskRunner(QObject):
             elif kind in UPLOAD_LABELS:
                 with artifacts_lock:
                     available = dict(artifacts)
+                if kind == "UPLOAD_JAR" and "local_jar_build" in step:
+                    project, filters = step["local_jar_build"]
+                    available[properties["ARTIFACT_NAME"]] = detect_jars(project.resolve(), self.stop, filters)
                 UploadEngine(self.services, log, self.stop).execute(kind, properties, artifacts=available)
             elif kind == "MAVEN_BUILD":
                 name = properties["ARTIFACT_NAME"].strip()
