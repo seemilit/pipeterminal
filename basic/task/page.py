@@ -694,7 +694,7 @@ class TaskPage(ModulePage):
 
     def _insert_module(self, module, _index):
         if module in STEP_LABELS:
-            point = self.flow.drop_position
+            point = self.flow.drop_position if self._parallel_scheduler() is not None else None
             position = [point.x(), point.y()] if point is not None else None
             self._edit_step(adding=True, step_type=module, position=position)
 
