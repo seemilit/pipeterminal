@@ -49,10 +49,10 @@ pipeline {
             steps {
                 powershell '''
                     $ErrorActionPreference = 'Stop'
-                    python pipeterminal/packaging/build.py --name PipeTerminal-Paid --project-root pipeterminal-private --extension-package premium --onefile
+                    python pipeterminal/packaging/build.py --name PipeTerminal-Premium --project-root pipeterminal-private --extension-package premium --onefile
                     exit $LASTEXITCODE
                 '''
-                archiveArtifacts artifacts: 'pipeterminal-private/dist/PipeTerminal-Paid-*.exe', fingerprint: true
+                archiveArtifacts artifacts: 'pipeterminal-private/dist/PipeTerminal-Premium-x64-*.exe', fingerprint: true
             }
         }
         stage('Publish to Gitee') {
@@ -60,9 +60,9 @@ pipeline {
                 withCredentials([string(credentialsId: 'gitee-release-token', variable: 'GITEE_RELEASE_TOKEN')]) {
                     powershell '''
                         $ErrorActionPreference = 'Stop'
-                        $files = @(Get-ChildItem pipeterminal-private/dist -Filter 'PipeTerminal-Paid-*.exe' -File)
+                        $files = @(Get-ChildItem pipeterminal-private/dist -Filter 'PipeTerminal-Premium-x64-*.exe' -File)
                         if ($files.Count -ne 1) { throw 'Expected exactly one EXE.' }
-                        $match = [regex]::Match($files[0].Name, '^PipeTerminal-Paid-([0-9]+[.][0-9]+[.][0-9]+)[.]exe$')
+                        $match = [regex]::Match($files[0].Name, '^PipeTerminal-Premium-x64-([0-9]+[.][0-9]+[.][0-9]+)[.]exe$')
                         if (-not $match.Success) { throw 'Expected a versioned EXE.' }
                         $tag = 'v' + $match.Groups[1].Value
                         python pipeterminal/packaging/publish_gitee.py $tag $env:RELEASE_COMMIT $files[0].FullName

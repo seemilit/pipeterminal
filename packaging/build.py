@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -153,8 +154,8 @@ def publish_package(package_root: Path, project_root: Path, name: str) -> Path:
     return destination
 
 
-def publish_executable(executable: Path, project_root: Path, name: str, version: str) -> Path:
-    destination = project_root / "dist" / f"{name}-{version}.exe"
+def publish_executable(executable: Path, project_root: Path, release_stem: str) -> Path:
+    destination = project_root / "dist" / f"{release_stem}.exe"
     destination.parent.mkdir(parents=True, exist_ok=True)
     with executable.open("rb") as source:
         output = destination.open("xb")
@@ -195,30 +196,28 @@ def stage_installer_runtime(python: Path, package_root: Path) -> None:
 
 def publish_release_formats(
     python: Path, executable: Path, package_root: Path, project_root: Path, name: str, version: str,
-    compiler: str, work_root: Path, environment: dict[str, str],
+    compiler: str, work_root: Path, environment: dict[str, str], *, release_stem: str, installer_stem: str,
 ) -> None:
-    prefix = f"{name}-{version}"
-    installer_name = f"{prefix}-Setup"
     archive = Path(shutil.make_archive(
-        str(work_root / f"{prefix}-Portable"), "zip",
+        str(work_root / release_stem), "zip",
         root_dir=package_root.parent, base_dir=package_root.name,
     ))
     # Place the runtime beside the installed EXE, after the portable ZIP is sealed.
     stage_installer_runtime(python, package_root)
     run_command([
-        compiler, f"/O{work_root}", f"/F{installer_name}",
+        compiler, f"/O{work_root}", f"/F{installer_stem}",
         f"/DProductName={name}", f"/DProductVersion={version}", f"/DPackageDir={package_root}",
         str(PUBLIC_ROOT / "packaging" / "installer.iss"),
     ], environment)
-    installer = work_root / f"{installer_name}.exe"
+    installer = work_root / f"{installer_stem}.exe"
     if not installer.is_file():
         raise RuntimeError("Inno Setup did not produce the expected installer.")
 
     dist_root = project_root / "dist"
-    for filename in (f"{prefix}.exe", archive.name, installer.name):
+    for filename in (f"{release_stem}.exe", archive.name, installer.name):
         if (dist_root / filename).exists():
             raise RuntimeError(f"Output already exists: {dist_root / filename}")
-    publish_executable(executable, project_root, name, version)
+    publish_executable(executable, project_root, release_stem)
     for source in (archive, installer):
         destination = dist_root / source.name
         shutil.move(source, destination)
@@ -228,6 +227,7 @@ def publish_release_formats(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", required=True)
+    parser.add_argument("--release-name", help="Product name in versioned release filenames")
     parser.add_argument("--project-root", type=Path, default=PUBLIC_ROOT)
     parser.add_argument("--extension-package", action="append", default=[])
     formats = parser.add_mutually_exclusive_group()
@@ -238,6 +238,11 @@ def main() -> int:
         parser.error("Use Windows with Python 3.10 or newer (Python 3.12 recommended).")
     if Path(arguments.name).name != arguments.name or arguments.name in (".", ".."):
         parser.error("--name must be a directory name without a path.")
+    release_name = arguments.release_name or arguments.name
+    if Path(release_name).name != release_name or release_name in (".", ".."):
+        parser.error("--release-name must be a filename component without a path.")
+    if (arguments.onefile or arguments.release_formats) and sysconfig.get_platform() != "win-amd64":
+        parser.error("Use x64 Python to build the x64 release packages.")
     project_root = arguments.project_root.resolve()
     if not (project_root / "main.py").is_file():
         parser.error(f"Entry point not found: {project_root / 'main.py'}")
@@ -251,6 +256,8 @@ def main() -> int:
     )
     try:
         version = version_from_git(PUBLIC_ROOT)
+        release_stem = f"{release_name}-x64-{version}"
+        installer_stem = f"{release_name}-Setup-x64-{version}"
         print(f"PipeTerminal version: {version}", flush=True)
         compiler = find_installer_compiler() if arguments.release_formats else None
         python = prepare_environment(project_root, environment)
@@ -269,9 +276,10 @@ def main() -> int:
             )
             publish_release_formats(
                 python, package_root, folder, project_root, arguments.name, version, compiler, work_root, environment,
+                release_stem=release_stem, installer_stem=installer_stem,
             )
         elif arguments.onefile:
-            publish_executable(package_root, project_root, arguments.name, version)
+            publish_executable(package_root, project_root, release_stem)
         else:
             publish_package(package_root, project_root, arguments.name)
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:

@@ -53,14 +53,14 @@ jobs:
         id: package
         shell: pwsh
         run: |
-          python pipeterminal/packaging/build.py --name PipeTerminal-Paid --project-root pipeterminal-private --extension-package premium --release-formats
+          python pipeterminal/packaging/build.py --name PipeTerminal-Paid --release-name PipeTerminal-Premium --project-root pipeterminal-private --extension-package premium --release-formats
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $files = @(Get-ChildItem pipeterminal-private/dist -File | Where-Object Name -Match '^PipeTerminal-Paid-[0-9]+\.[0-9]+\.[0-9]+\.exe$')
+          $files = @(Get-ChildItem pipeterminal-private/dist -File | Where-Object Name -Match '^PipeTerminal-Premium-x64-[0-9]+\.[0-9]+\.[0-9]+\.exe$')
           if ($files.Count -ne 1) { throw 'Expected exactly one versioned standalone EXE.' }
-          $version = $files[0].BaseName.Substring('PipeTerminal-Paid-'.Length)
-          foreach ($suffix in @('-Portable.zip', '-Setup.exe')) {
-              if (-not (Test-Path -LiteralPath "pipeterminal-private/dist/PipeTerminal-Paid-$version$suffix" -PathType Leaf)) {
-                  throw "Missing release package with suffix $suffix."
+          $version = $files[0].BaseName.Substring('PipeTerminal-Premium-x64-'.Length)
+          foreach ($package in @("PipeTerminal-Premium-x64-$version.zip", "PipeTerminal-Premium-Setup-x64-$version.exe")) {
+              if (-not (Test-Path -LiteralPath "pipeterminal-private/dist/$package" -PathType Leaf)) {
+                  throw "Missing release package: $package."
               }
           }
           "version=$version" >> $env:GITHUB_OUTPUT
@@ -68,9 +68,9 @@ jobs:
         with:
           name: pipeterminal-windows-packages
           path: |
-            pipeterminal-private/dist/PipeTerminal-Paid-${{ steps.package.outputs.version }}.exe
-            pipeterminal-private/dist/PipeTerminal-Paid-${{ steps.package.outputs.version }}-Portable.zip
-            pipeterminal-private/dist/PipeTerminal-Paid-${{ steps.package.outputs.version }}-Setup.exe
+            pipeterminal-private/dist/PipeTerminal-Premium-x64-${{ steps.package.outputs.version }}.exe
+            pipeterminal-private/dist/PipeTerminal-Premium-x64-${{ steps.package.outputs.version }}.zip
+            pipeterminal-private/dist/PipeTerminal-Premium-Setup-x64-${{ steps.package.outputs.version }}.exe
           if-no-files-found: error
           compression-level: 0
           overwrite: true
@@ -98,8 +98,8 @@ jobs:
         run: |
           tag="v$VERSION"
           ref="refs/tags/$tag"
-          prefix="PipeTerminal-Paid-$VERSION"
-          assets=("release-files/$prefix.exe" "release-files/$prefix-Portable.zip" "release-files/$prefix-Setup.exe")
+          stem="PipeTerminal-Premium-x64-$VERSION"
+          assets=("release-files/$stem.exe" "release-files/$stem.zip" "release-files/PipeTerminal-Premium-Setup-x64-$VERSION.exe")
           refs="$(git ls-remote origin "$ref" "$ref^{}")"
           if [[ -n "$refs" ]]; then
             commit="$(awk -v ref="$ref" '$2 == ref { tag = $1 } $2 == ref "^{}" { peeled = $1 } END { print (peeled ? peeled : tag) }' <<< "$refs")"
@@ -137,9 +137,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          prefix="PipeTerminal-Paid-$VERSION"
           gh release download "v$VERSION" --dir release-files \
-            --pattern "$prefix-Portable.zip" --pattern "$prefix-Setup.exe"
+            --pattern "PipeTerminal-Premium-x64-$VERSION.zip" --pattern "PipeTerminal-Premium-Setup-x64-$VERSION.exe"
       - name: Publish to Gitee
         env:
           GITEE_REPOSITORY: ${{ vars.GITEE_REPOSITORY }}
@@ -150,6 +149,5 @@ jobs:
             echo '::error::Configure the GITEE_REPOSITORY variable and GITEE_RELEASE_TOKEN secret before publishing.'
             exit 1
           fi
-          prefix="release-files/PipeTerminal-Paid-$VERSION"
           python packaging/publish_gitee.py "v$VERSION" "$GITHUB_SHA" \
-            "$prefix-Portable.zip" "$prefix-Setup.exe"
+            "release-files/PipeTerminal-Premium-x64-$VERSION.zip" "release-files/PipeTerminal-Premium-Setup-x64-$VERSION.exe"

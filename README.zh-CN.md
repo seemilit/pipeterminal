@@ -6,4 +6,4 @@ PipeTerminal 把 SSH、SFTP、脚本执行、打包和部署集成到可视化�
 
 ## 下载
 
-在 [GitHub Releases](https://github.com/seemilit/pipeterminal/releases) 或 [Gitee 发行版](https://gitee.com/seemilit/pipeterminal/releases) 下载 `PipeTerminal-Paid-<版本>.exe`。Windows 便携版可以直接运行，默认使用免费功能，输入有效激活码后解锁付费功能。
+在 [GitHub Releases](https://github.com/seemilit/pipeterminal/releases) 或 [Gitee 发行版](https://gitee.com/seemilit/pipeterminal/releases) 下载 `PipeTerminal-Premium-x64-<版本>.zip`。解压后运行 `PipeTerminal.exe`，默认使用免费功能，输入有效激活码后解锁付费功能。

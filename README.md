@@ -6,4 +6,4 @@ PipeTerminal combines SSH, SFTP, script execution, builds, and automated deploym
 
 ## Download
 
-The [GitHub Releases](https://github.com/seemilit/pipeterminal/releases) and [Gitee Releases](https://gitee.com/seemilit/pipeterminal/releases) pages are the download locations for `PipeTerminal-Paid-<version>.exe`. Run the portable Windows EXE directly. It starts in free mode and unlocks paid features with a valid activation code.
+Download `PipeTerminal-Premium-x64-<version>.zip` from [GitHub Releases](https://github.com/seemilit/pipeterminal/releases) or [Gitee Releases](https://gitee.com/seemilit/pipeterminal/releases). Extract the ZIP and run `PipeTerminal.exe`. It starts in free mode and unlocks paid features with a valid activation code.
