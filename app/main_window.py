@@ -97,6 +97,7 @@ class MainWindow(QMainWindow):
         self.shell.toolbar.addAction(self.reset_layout_action)
         help_button = self.shell.toolbar.add_action(QAction(tr("帮助"), self), right=True, show_icon=False)
         help_menu = QMenu(help_button)
+        self._help_menu = help_menu
         about_action = QAction(tr("关于 PipeTerminal"), help_menu)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
@@ -110,7 +111,7 @@ class MainWindow(QMainWindow):
     def _show_about(self) -> None:
         authorization = self.registry.authorization
         paid = self.registry.has_paid_features and authorization is not None and authorization.active_status == "valid"
-        edition = tr("付费版" if paid else "免费版")
+        edition = tr("Plus 版" if paid else "免费版")
         version = QApplication.applicationVersion()
         dialog = QMessageBox(self)
         dialog.setWindowTitle(tr("关于 PipeTerminal"))
@@ -118,9 +119,15 @@ class MainWindow(QMainWindow):
         dialog.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
         dialog.setText(tr("版本 {0}", version) if version else tr("版本未知"))
         dialog.setInformativeText(tr("当前权限：{0}", edition))
+        appearance = self.registry.get_service("window_appearance")
+        if appearance is not None:
+            appearance.decorate_about(dialog)
         dialog.exec()
 
     def load_modules(self) -> None:
+        appearance = self.registry.get_service("window_appearance")
+        if appearance is not None:
+            appearance.attach(self, self._window_state.store if self._window_state is not None else None)
         for module in self.registry.get_sidebar_modules():
             self.shell.sidebar.add_module(
                 module.id,
@@ -216,14 +223,21 @@ class MainWindow(QMainWindow):
         if not bottom.has_panel(panel_id):
             bottom.add_panel(panel_id, page.windowTitle() or tr(self.registry.get(module_id).name), page)
         bottom.show_panel(panel_id)
-        bottom.show()
         del blocker
 
     def _activate_workspace_panel(self, panel: QWidget) -> None:
-        if not isinstance(panel, ModulePage) or not panel.uses_panel_workspace:
+        if not self.shell.workspace_mode or not isinstance(panel, ModulePage):
             return
         module_id = next((key for key, page in self._module_pages.items() if page is panel), None)
         if module_id is None:
+            # Shell and SFTP tabs use the server configuration actions and directory.
+            page = self._module_page("connection")
+            if self._active_page is not page:
+                self._active_page = page
+                self._current_module_id = "connection"
+                self.shell.sidebar.set_active_module("connection")
+                self._refresh_directory()
+                self._update_file_actions()
             return
         if panel is not self._active_page:
             self._open_module(module_id, from_panel=True)
@@ -258,7 +272,9 @@ class MainWindow(QMainWindow):
 
     def _select_directory_item(self, item_id: str) -> None:
         if self._active_page is not None:
-            self._active_page.select_item(item_id)
+            selected = self._active_page.select_item(item_id)
+            if selected and not self._active_page.uses_panel_workspace:
+                self._set_bottom_panel_visible(False)
             self.shell.sidebar.directory_panel.select_item(self._active_page.current_item_id())
 
     def _activate_directory_item(self, item_id: str) -> None:
@@ -283,6 +299,8 @@ class MainWindow(QMainWindow):
         if not self.shell.panel_focus_mode and page is not None and page.is_action_enabled(action_id):
             handler = page.file_actions.get(action_id)
             if handler is not None:
+                if not page.uses_panel_workspace and action_id != "connect":
+                    self._set_bottom_panel_visible(False)
                 handler()
 
     def _set_page_status(self, page: ModulePage, message: str) -> None:
@@ -290,22 +308,24 @@ class MainWindow(QMainWindow):
             self.shell.status_label.setText(message)
 
     def _set_bottom_panel_visible(self, visible: bool) -> None:
-        if (not visible and self.shell.bottom_panel.has_panels()
-                and self._active_page is not None and self._active_page.uses_panel_workspace):
-            self._sync_layout_actions()
-            return
-        if not visible and self.shell.panel_focus_mode:
+        visible = visible and self.shell.bottom_panel.has_panels()
+        if visible:
+            self.shell.set_workspace_mode(True)
+            self._activate_workspace_panel(self.shell.bottom_panel.tabs.currentWidget())
+        else:
             self._set_panel_focus_mode(False)
-        self.bottom_panel_action.setText(tr("隐藏交互窗口") if visible else tr("显示交互窗口"))
-        self.shell.bottom_panel.setVisible(visible)
+            if self._active_page is not None and self._active_page.uses_panel_workspace:
+                self._open_module("connection", from_panel=True)
+            else:
+                self.shell.set_workspace_mode(False)
         self._sync_layout_actions()
 
     def _request_panel_focus(self, panel: QWidget, focused: bool) -> None:
         panel_id = self.shell.bottom_panel.panel_id(panel)
         if panel_id is None:
             return
-        if focused:
-            self.shell.bottom_panel.show_panel(panel_id)
+        self.shell.set_workspace_mode(True)
+        self.shell.bottom_panel.show_panel(panel_id)
         self._set_panel_focus_mode(focused)
 
     def _set_panel_focus_mode(self, focused: bool) -> None:
@@ -322,30 +342,25 @@ class MainWindow(QMainWindow):
             action.setChecked(not widget.isHidden())
             del blocker
         self.sidebar_action.setEnabled(not self.shell.panel_focus_mode)
-        self.bottom_panel_action.setEnabled(
-            self._active_page is None or not self._active_page.uses_panel_workspace
-        )
+        self.bottom_panel_action.setEnabled(self.shell.bottom_panel.has_panels())
         self.bottom_panel_action.setText(
-            tr("显示交互窗口") if self.shell.bottom_panel.isHidden() else tr("隐藏交互窗口")
+            tr("隐藏交互窗口") if self.shell.workspace_mode else tr("显示交互窗口")
         )
 
     def _show_bottom_panel(self, panel_id: str, name: str, panel: QWidget) -> None:
         bottom = self.shell.bottom_panel
         if not bottom.has_panel(panel_id):
             bottom.add_panel(panel_id, name, panel)
+        self.shell.set_workspace_mode(True)
         bottom.show_panel(panel_id)
-        was_hidden = bottom.isHidden()
-        self.bottom_panel_action.setChecked(True)
-        if was_hidden and not self.shell.panel_focus_mode:
-            self.shell.right_splitter.setSizes(
-                self._window_state.panel_sizes if self._window_state is not None else [370, 380]
-            )
+        self._sync_layout_actions()
 
     def _remove_bottom_panel(self, panel_id: str) -> None:
         self.shell.bottom_panel.remove_panel(panel_id)
         if not self.shell.bottom_panel.has_panels():
-            self._set_panel_focus_mode(False)
-            self.bottom_panel_action.setChecked(False)
+            self._set_bottom_panel_visible(False)
+        else:
+            self._sync_layout_actions()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if any(callable(getattr(page, "can_close", None)) and not page.can_close() for page in self._module_pages.values()):
@@ -391,7 +406,7 @@ class MainWindow(QMainWindow):
     def _reset_layout(self) -> None:
         self._set_panel_focus_mode(False)
         self.sidebar_action.setChecked(True)
-        self.bottom_panel_action.setChecked(False)
         self.shell.reset_layout()
+        self._sync_layout_actions()
         if self._window_state is not None:
             self._window_state.reset_layout()

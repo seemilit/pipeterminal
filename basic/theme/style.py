@@ -3,8 +3,8 @@
 from .palettes import ThemePalette
 
 
-def build_stylesheet(theme: ThemePalette) -> str:
-    return f"""
+def build_stylesheet(theme: ThemePalette, *, translucent_workspace: bool = False) -> str:
+    stylesheet = f"""
 QWidget {{ color: {theme.foreground}; }}
 QMainWindow, QDialog, QWidget#applicationShell {{ background: {theme.background}; }}
 QFrame#mainToolbar {{ background: {theme.surface}; border: 0; border-bottom: 1px solid {theme.border}; }}
@@ -52,6 +52,8 @@ QFrame#serverConnectionCard, QFrame#serverAccessPathsCard {{
     background: {theme.surface}; border: 1px solid {theme.border}; border-radius: 10px;
 }}
 QWidget#serverConfigurationPage {{ background: {theme.background}; }}
+QFrame#taskPanel {{ border: 1px solid palette(mid); border-radius: 8px; background: palette(base); }}
+QTreeWidget#taskModuleLibrary {{ background: palette(base); border: none; }}
 QLabel#configurationSectionHeading {{ font-weight: 600; font-size: 14px; }}
 QFrame#serverAccessPathRow {{
     background: {theme.surface}; border: 1px solid transparent; border-radius: 4px;
@@ -191,4 +193,32 @@ QScrollBar::handle:horizontal {{ background: {theme.border}; min-width: 24px; bo
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+"""
+    if not translucent_workspace:
+        return stylesheet
+
+    surface_rgb = ", ".join(str(int(theme.surface[index:index + 2], 16)) for index in (1, 3, 5))
+    return stylesheet + f"""
+#applicationShell QFrame#mainToolbar, #applicationShell QFrame#editorToolbar,
+#applicationShell QFrame#moduleSidebar, #applicationShell QFrame#directoryPanel,
+#applicationShell QWidget#directoryHeader, #applicationShell QWidget#moduleNavigation,
+#applicationShell QFrame#bottomPanel, #applicationShell QStackedWidget#mainPages,
+#applicationShell QWidget#serverConfigurationPage,
+#applicationShell QTabWidget#bottomPanelTabs::pane,
+#applicationShell QTabWidget#taskParameterTabs::pane {{
+    background: transparent;
+}}
+#applicationShell QFrame#taskPanel, #applicationShell QFrame#serverConnectionCard,
+#applicationShell QFrame#serverAccessPathsCard, #applicationShell QWidget[workspaceSurface="true"] {{
+    background: rgba({surface_rgb}, 56);
+}}
+#applicationShell QFrame#serverAccessPathRow[active="false"],
+#applicationShell QFrame#moduleSidebar QAbstractItemView,
+#applicationShell QFrame#taskPanel QTreeWidget#taskModuleLibrary,
+#applicationShell QWidget[workspaceSurface="true"] QAbstractItemView,
+#applicationShell QPlainTextEdit#taskParameterPreview,
+#applicationShell QScrollArea#serverConfigurationForm,
+#applicationShell QScrollArea#serverConfigurationForm > QWidget#qt_scrollarea_viewport {{
+    background: transparent;
+}}
 """

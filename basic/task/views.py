@@ -17,6 +17,7 @@ from .upload import STEP_LABELS as UPLOAD_LABELS, POLICIES as UPLOAD_POLICIES
 
 
 class _FlowNode(QGraphicsRectItem):
+    ADD_ARROW_HIT_RADIUS = 16
     PORTS = {"left": QPointF(-9, 40), "right": QPointF(309, 40), "top": QPointF(150, -9), "bottom": QPointF(150, 89)}
     DIRECTIONS = {"left": QPointF(-1, 0), "right": QPointF(1, 0), "top": QPointF(0, -1), "bottom": QPointF(0, 1)}
 
@@ -28,18 +29,18 @@ class _FlowNode(QGraphicsRectItem):
         return self.pos() + self.PORTS[port] - self.DIRECTIONS[port] * 6
 
     def _arrow_center(self, port):
-        return self.PORTS[port] + self.DIRECTIONS[port] * 21
+        return self.PORTS[port] + self.DIRECTIONS[port] * 30
 
     def add_direction_at(self, point):
         if self.quick_add_enabled:
             for port in self.PORTS:
                 offset = point - self._arrow_center(port)
-                if abs(offset.x()) <= 9 and abs(offset.y()) <= 9:
+                if abs(offset.x()) <= self.ADD_ARROW_HIT_RADIUS and abs(offset.y()) <= self.ADD_ARROW_HIT_RADIUS:
                     return port
         return None
 
     def boundingRect(self):
-        return self.rect().adjusted(-40, -40, 40, 40)
+        return self.rect().adjusted(-56, -56, 56, 56)
 
     def shape(self):
         path = QPainterPath()
@@ -49,7 +50,8 @@ class _FlowNode(QGraphicsRectItem):
             path.addEllipse(point, 10, 10)
             if self.quick_add_enabled:
                 track = QRectF(point, self._arrow_center(port)).normalized()
-                path.addRect(track.adjusted(-9, -9, 9, 9))
+                radius = self.ADD_ARROW_HIT_RADIUS
+                path.addRect(track.adjusted(-radius, -radius, radius, radius))
         return path
 
     def hoverEnterEvent(self, event):
@@ -125,14 +127,17 @@ class _FlowNode(QGraphicsRectItem):
                     center = self._arrow_center(port)
                     side = QPointF(-direction.y(), direction.x())
                     painter.drawPolygon(QPolygonF([
-                        center + direction * 6,
-                        center - direction * 4 + side * 5,
-                        center - direction * 4 - side * 5,
+                        center + direction * 8,
+                        center - direction * 6 + side * 7,
+                        center - direction * 6 - side * 7,
                     ]))
         painter.restore()
 
 
 class _FlowEdge(QGraphicsPathItem):
+    BUTTON_RADIUS = 16
+    BUTTON_HIT_RADIUS = 20
+
     def __init__(self, path, first, second, pen, editable):
         super().__init__(path)
         self.endpoints = (first, second)
@@ -145,21 +150,27 @@ class _FlowEdge(QGraphicsPathItem):
         self.setToolTip(tr("点击＋插入节点；选中连线后按 Delete 删除"))
 
     def boundingRect(self):
-        return super().boundingRect().adjusted(-11, -11, 11, 11)
+        margin = self.BUTTON_HIT_RADIUS + 2
+        return super().boundingRect().adjusted(-margin, -margin, margin, margin)
+
+    def insert_button_at(self, point):
+        offset = point - self.insert_point
+        return self.editable and (self.hovered or self.isSelected()) and QPointF.dotProduct(offset, offset) <= self.BUTTON_HIT_RADIUS ** 2
 
     def shape(self):
         stroke = QPainterPathStroker()
-        stroke.setWidth(12)
+        stroke.setWidth(24)
         shape = stroke.createStroke(self.path())
         shape.setFillRule(Qt.FillRule.WindingFill)
         if self.editable and (self.hovered or self.isSelected()):
-            shape.addEllipse(self.insert_point, 10, 10)
+            shape.addEllipse(self.insert_point, self.BUTTON_HIT_RADIUS, self.BUTTON_HIT_RADIUS)
         return shape
 
     def _set_hovered(self, hovered):
         if self.hovered == hovered:
             return
         self.hovered = hovered
+        self.setZValue(-0.5 if hovered else -1)
         for node in self.endpoints:
             node.link_highlights += 1 if hovered else -1
             node.update()
@@ -170,8 +181,13 @@ class _FlowEdge(QGraphicsPathItem):
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event):
+        self.unsetCursor()
         self._set_hovered(False)
         super().hoverLeaveEvent(event)
+
+    def hoverMoveEvent(self, event):
+        self.setCursor(Qt.CursorShape.PointingHandCursor if self.insert_button_at(event.pos()) else Qt.CursorShape.ArrowCursor)
+        super().hoverMoveEvent(event)
 
     def paint(self, painter, option, widget=None):
         active = self.hovered or self.isSelected()
@@ -187,9 +203,9 @@ class _FlowEdge(QGraphicsPathItem):
         if active and self.editable:
             point = self.insert_point
             painter.setBrush(self.endpoints[0]._palette.brush(QPalette.ColorRole.Base))
-            painter.drawEllipse(point, 9, 9)
-            painter.drawLine(point - QPointF(4, 0), point + QPointF(4, 0))
-            painter.drawLine(point - QPointF(0, 4), point + QPointF(0, 4))
+            painter.drawEllipse(point, self.BUTTON_RADIUS, self.BUTTON_RADIUS)
+            painter.drawLine(point - QPointF(6, 0), point + QPointF(6, 0))
+            painter.drawLine(point - QPointF(0, 6), point + QPointF(0, 6))
 
 
 class TaskFlowView(QGraphicsView):
@@ -211,6 +227,8 @@ class TaskFlowView(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setScene(QGraphicsScene(self))
+        self._background_painter = None
+        self._background_update_mode = self.viewportUpdateMode()
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.scene().selectionChanged.connect(self._selected)
@@ -245,8 +263,25 @@ class TaskFlowView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
+    def set_background_painter(self, paint):
+        if paint is self._background_painter:
+            return
+        if self._background_painter is None:
+            self._background_update_mode = self.viewportUpdateMode()
+            # A background fixed to the viewport must not scroll with scene pixels.
+            self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        elif paint is None:
+            self.setViewportUpdateMode(self._background_update_mode)
+        self._background_painter = paint
+        self.viewport().update()
+
     def drawBackground(self, painter, rect):
         painter.fillRect(rect, self.palette().brush(QPalette.ColorRole.AlternateBase))
+        if self._background_painter is not None:
+            painter.save()
+            painter.resetTransform()
+            self._background_painter(painter)
+            painter.restore()
         color = self.palette().color(QPalette.ColorRole.Mid)
         color.setAlpha(100)
         pen = QPen(color, 1.5)
@@ -296,7 +331,7 @@ class TaskFlowView(QGraphicsView):
             self._start_node = self._link_nodes[START] = node
         for index, step in enumerate(steps):
             y = 20 + index * 116
-            label = STEP_LABELS.get(step["type"], step["type"])
+            label = "上传 JAR 包" if step["type"] == "UPLOAD_JAR" else STEP_LABELS.get(step["type"], step["type"])
             properties = step.get("properties", {})
             source = properties.get("SOURCE_BRANCH") or tr("当前分支")
             target = properties.get("TARGET_BRANCH") or tr("当前分支")
@@ -468,7 +503,7 @@ class TaskFlowView(QGraphicsView):
             self._selection_press = True
             self.setFocus()
             endpoints = item.data(0)
-            insert = (item.hovered or item.isSelected()) and (item.insert_point - self.mapToScene(self._press_pos)).manhattanLength() <= 12
+            insert = item.insert_button_at(item.mapFromScene(self.mapToScene(self._press_pos)))
             blocker = QSignalBlocker(self.scene())
             self.scene().clearSelection()
             item.setSelected(True)
@@ -534,7 +569,6 @@ class TaskFlowView(QGraphicsView):
             self.scene().removeItem(edge)
         self._edges.clear()
         routes = []
-        ports = defaultdict(list)
         for source, target, output_port, input_port in self._links:
             first, second = self._link_nodes[source], self._link_nodes[target]
             delta = second.pos() - first.pos()
@@ -544,27 +578,23 @@ class TaskFlowView(QGraphicsView):
                 output, incoming = ("bottom", "top") if delta.y() >= 0 else ("top", "bottom")
             output = output_port or output
             incoming = input_port or incoming
-            index = len(routes)
             routes.append((source, target, first, second, output, incoming))
-            ports[source, output].append((index, 0, second))
-            ports[target, incoming].append((index, 1, first))
-        offsets = {}
-        for (node_id, port), members in ports.items():
-            node = self._link_nodes[node_id]
-            horizontal = bool(node.DIRECTIONS[port].x())
-            members.sort(key=lambda member: member[2].y() if horizontal else member[2].x())
-            span = node.rect().height() if horizontal else node.rect().width()
-            spacing = min(14, (span - 32) / max(1, len(members) - 1))
-            tangent = QPointF(0, 1) if horizontal else QPointF(1, 0)
-            for slot, (index, side, _) in enumerate(members):
-                offsets[index, side] = tangent * ((slot - (len(members) - 1) / 2) * spacing)
         cards = tuple(node.rect().translated(node.pos()) for node in self._link_nodes.values())
+        branches = self._branch_routes(routes, cards)
         for index, (source, target, first, second, output, incoming) in enumerate(routes):
-            start = first.anchor(output) + offsets[index, 0]
-            end = second.anchor(incoming) + offsets[index, 1]
-            offset = offsets[index, 0] if not offsets[index, 0].isNull() else offsets[index, 1]
-            path = self._connection_path(start, end, output, incoming, cards, offset.x() + offset.y())
+            start = first.anchor(output)
+            end = second.anchor(incoming)
+            path = self._connection_path(start, end, output, incoming, cards,
+                                         points=branches.get(index), rounded=index not in branches)
             edge = _FlowEdge(path, first, second, self._connection_pen(), self._editable)
+            if index in branches:
+                # Keep insertion on this branch rather than on the shared trunk.
+                edge.insert_point = (branches[index][-2] + end) / 2
+                pen = edge.pen()
+                color = pen.color()
+                color.setAlpha(255)
+                pen.setColor(color)
+                edge.setPen(pen)
             self.scene().addItem(edge)
             edge.setData(0, (source, target))
             edge.setData(1, output)
@@ -572,6 +602,39 @@ class TaskFlowView(QGraphicsView):
             if (source, target) in selected:
                 edge.setSelected(True)
             self._edges.append(edge)
+
+    @classmethod
+    def _branch_routes(cls, routes, cards):
+        groups = defaultdict(list)
+        for index, (source, target, first, second, output, incoming) in enumerate(routes):
+            direction = _FlowNode.DIRECTIONS[output]
+            start, end = first.anchor(output), second.anchor(incoming)
+            if direction == -_FlowNode.DIRECTIONS[incoming] and QPointF.dotProduct(end - start, direction) >= 32:
+                groups[source, output].append((index, start, end))
+        obstacles = tuple(card.adjusted(-2, -2, 2, 2) for card in cards)
+        branches = {}
+        for (_, output), members in groups.items():
+            if len(members) < 2:
+                continue
+            direction = _FlowNode.DIRECTIONS[output]
+            start = members[0][1]
+            gap = min(QPointF.dotProduct(end - start, direction) for _, _, end in members)
+            # All branches share one outlet and one perpendicular trunk.
+            # Try nearby lanes if the centered trunk would cross another node.
+            for distance in dict.fromkeys((gap / 2, 16, gap - 16)):
+                junction = start + direction * distance
+                proposed = {}
+                for index, _, end in members:
+                    bend = QPointF(junction.x(), end.y()) if direction.x() else QPointF(end.x(), junction.y())
+                    points, _ = cls._compact_route((start, junction, bend, end))
+                    if any(cls._segment_crosses_card(a, b, card)
+                           for a, b in zip(points, points[1:]) for card in obstacles):
+                        break
+                    proposed[index] = points
+                else:
+                    branches.update(proposed)
+                    break
+        return branches
 
     def _connection_pen(self, *, preview=False):
         color = self.palette().color(QPalette.ColorRole.Highlight)
@@ -582,14 +645,15 @@ class TaskFlowView(QGraphicsView):
         return pen
 
     @classmethod
-    def _connection_path(cls, start, end, output, incoming, cards=(), lane=0):
+    def _connection_path(cls, start, end, output, incoming, cards=(), lane=0, *, points=None, rounded=True):
         departure = _FlowNode.DIRECTIONS[output]
         arrival = _FlowNode.DIRECTIONS[incoming]
-        points = cls._connection_points(start, end, departure, arrival, cards, lane)
+        if points is None:
+            points = cls._connection_points(start, end, departure, arrival, cards, lane)
         path = QPainterPath(start)
         for previous, corner, following in zip(points, points[1:], points[2:]):
             before, after = previous - corner, following - corner
-            if QPointF.dotProduct(before, after) != 0:
+            if not rounded or QPointF.dotProduct(before, after) != 0:
                 path.lineTo(corner)
                 continue
             radius = min(7, before.manhattanLength() / 2, after.manhattanLength() / 2)
@@ -621,13 +685,18 @@ class TaskFlowView(QGraphicsView):
         else:
             middle_y += max(-abs(first.y() - last.y()) / 4, min(lane, abs(first.y() - last.y()) / 4))
 
-        # Prefer a centered step when opposing ports are offset.
+        # Try lanes beside nearby cards before falling back to the outside of
+        # the whole graph. Unrelated nodes must not force a distant detour.
+        corridor = QRectF(first, last).normalized().adjusted(-16, -16, 16, 16)
+        nearby = [card for card in cards if corridor.intersects(card)]
+        x_lanes = dict.fromkeys((middle_x, *(x for card in nearby for x in (card.left() - 16, card.right() + 16)), left, right))
+        y_lanes = dict.fromkeys((middle_y, *(y for card in nearby for y in (card.top() - 16, card.bottom() + 16)), top, bottom))
         routes = [
             (QPointF(x, first.y()), QPointF(x, last.y()))
-            for x in (middle_x, left, right)
+            for x in x_lanes
         ] + [
             (QPointF(first.x(), y), QPointF(last.x(), y))
-            for y in (middle_y, top, bottom)
+            for y in y_lanes
         ] + [(QPointF(first.x(), last.y()),), (QPointF(last.x(), first.y()),)]
         obstacles = tuple(card.adjusted(-2, -2, 2, 2) for card in cards)
         candidates = []
@@ -684,14 +753,21 @@ class TaskFlowView(QGraphicsView):
         item = self.itemAt(event.pos())
         if isinstance(item, _FlowNode):
             index = item.data(0)
+            menu = QMenu(self)
+            add = menu.addAction(str(tr("添加节点")))
             if index < 0:
+                try:
+                    if menu.exec(event.globalPos()) is add:
+                        self._open_add_menu(event.globalPos(), index=index, direction="bottom")
+                finally:
+                    menu.deleteLater()
                 event.accept()
                 return
             if not item.isSelected():
                 self.select_step(index, reveal=False)
                 self.step_selected.emit(index)
             selected = self.selected_step_indexes()
-            menu = QMenu(self)
+            menu.addSeparator()
             remove = menu.addAction(str(tr("删除节点")))
             menu.addSeparator()
             run_from = menu.addAction(str(tr("从此节点开始执行")))
@@ -700,7 +776,9 @@ class TaskFlowView(QGraphicsView):
             run_selected.setEnabled(len(selected) > 1)
             try:
                 action = menu.exec(event.globalPos())
-                if action is remove:
+                if action is add:
+                    self._open_add_menu(event.globalPos(), index=index, direction="bottom")
+                elif action is remove:
                     self.node_delete_requested.emit((index,))
                 elif action is run_from:
                     self.run_from_requested.emit(index)
@@ -714,7 +792,7 @@ class TaskFlowView(QGraphicsView):
             index = item.data(0)
             menu = QMenu(self)
             try:
-                insert = menu.addAction(str(tr("插入节点")))
+                insert = menu.addAction(str(tr("添加节点")))
                 action = menu.addAction(str(tr("删除连线")))
                 chosen = menu.exec(event.globalPos())
                 if chosen is insert:
@@ -977,7 +1055,8 @@ class ModuleLibrary(QTreeWidget):
         self.setHeaderHidden(True)
         self.setIndentation(12)
         self.setIconSize(QSize(20, 20))
-        self.setStyleSheet("QTreeWidget { border: none; background: palette(base); } QTreeWidget::item { padding: 9px 6px; margin: 3px 0; border-radius: 6px; } QTreeWidget::item:hover { background: palette(alternate-base); } QTreeWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }")
+        self.setObjectName("taskModuleLibrary")
+        self.setStyleSheet("QTreeWidget::item { padding: 9px 6px; margin: 3px 0; border-radius: 6px; } QTreeWidget::item:hover { background: palette(alternate-base); } QTreeWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }")
         self.setDragEnabled(True)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setToolTip(tr("拖动模块到中间流程画布后编辑参数"))

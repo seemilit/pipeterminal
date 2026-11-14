@@ -23,6 +23,7 @@ class ThemeManager(QObject):
         self.settings_path = settings_path
         self.application = application
         self.theme_id = ""
+        self._translucent_workspace = False
         saved_theme = self._read_settings().get("theme", "white")
         self.apply_theme(saved_theme if isinstance(saved_theme, str) and saved_theme in THEMES else "white")
 
@@ -68,9 +69,14 @@ class ThemeManager(QObject):
         for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
             palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(theme.muted))
         self.application.setPalette(palette)
-        self.application.setStyleSheet(build_stylesheet(theme))
+        self.application.setStyleSheet(build_stylesheet(theme, translucent_workspace=self._translucent_workspace))
         self.theme_id = theme_id
         self.theme_changed.emit(theme_id)
+
+    def set_translucent_workspace(self, enabled: bool) -> None:
+        if enabled != self._translucent_workspace:
+            self._translucent_workspace = enabled
+            self.application.setStyleSheet(build_stylesheet(THEMES[self.theme_id], translucent_workspace=enabled))
 
     def set_theme(self, theme_id: str) -> None:
         if theme_id not in THEMES:

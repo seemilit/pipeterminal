@@ -85,7 +85,7 @@ class TaskPage(ModulePage):
             "execute": self.execute_task,
         }
         self.setObjectName("taskEditor")
-        self.setStyleSheet("QFrame#taskPanel { border: 1px solid palette(mid); border-radius: 8px; background: palette(base); } QLabel#panelHeading { padding: 6px 2px 10px 2px; font-weight: 600; } QLabel#taskHeading { font-size: 18px; font-weight: 600; } QFrame#taskToolBar QPushButton, QFrame#taskEditBar QPushButton { background: transparent; border: 1px solid transparent; padding: 3px 10px; min-height: 24px; } QFrame#taskToolBar QPushButton:hover:enabled, QFrame#taskEditBar QPushButton:hover:enabled { background: palette(alternate-base); border-color: palette(mid); } QFrame#taskToolBar QPushButton:checked, QFrame#taskToolBar QPushButton:checked:hover:enabled { background: palette(highlight); color: palette(highlighted-text); } QSplitter::handle { background: transparent; } QSplitter::handle:hover { background: palette(midlight); }")
+        self.setStyleSheet("QLabel#panelHeading { padding: 6px 2px 10px 2px; font-weight: 600; } QLabel#taskHeading { font-size: 18px; font-weight: 600; } QFrame#taskToolBar QPushButton, QFrame#taskEditBar QPushButton { background: transparent; border: 1px solid transparent; padding: 3px 10px; min-height: 24px; } QFrame#taskToolBar QPushButton:hover:enabled, QFrame#taskEditBar QPushButton:hover:enabled { background: palette(alternate-base); border-color: palette(mid); } QFrame#taskToolBar QPushButton:checked, QFrame#taskToolBar QPushButton:checked:hover:enabled { background: palette(highlight); color: palette(highlighted-text); } QSplitter::handle { background: transparent; } QSplitter::handle:hover { background: palette(midlight); }")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
@@ -195,8 +195,10 @@ class TaskPage(ModulePage):
         self.library_panel.setVisible(self._library_visible)
         self.flow_panel = self._view_panel(tr("流程视图"), self.flow)
         self.parameter_preview = QPlainTextEdit()
+        self.parameter_preview.setObjectName("taskParameterPreview")
         self.parameter_preview.setReadOnly(True)
         self.parameter_tabs = QTabWidget()
+        self.parameter_tabs.setObjectName("taskParameterTabs")
         self.parameter_tabs.addTab(self.parameters, tr("编辑参数"))
         self.parameter_tabs.addTab(self.parameter_preview, tr("流程参数"))
         self.parameter_panel = QFrame()
@@ -236,6 +238,9 @@ class TaskPage(ModulePage):
     def bind_registry(self, registry):
         super().bind_registry(registry)
         self.execution_services.log_service = registry.get_service("log")
+        appearance = registry.get_service("window_appearance")
+        if appearance is not None:
+            appearance.decorate_task(self)
 
     def _confirm_task_host(self, request):
         try:

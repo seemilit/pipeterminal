@@ -2,6 +2,7 @@
 
 
 ROWS = (
+    ("Plus 版", "Plus", "Plus 版", "Plus 版", "Plus 버전", "Edición Plus"),
     ("{0}需要付费授权", "{0} requires a paid license", "{0}需要付費授權", "{0}には有料ライセンスが必要です", "{0}에는 유료 라이선스가 필요합니다", "{0} requiere una licencia de pago"),
     ("付费功能", "Paid feature", "付費功能", "有料機能", "유료 기능", "Función de pago"),
     ("输入激活码", "Enter activation code", "輸入啟用碼", "認証コードを入力", "활성화 코드 입력", "Introducir código de activación"),
@@ -57,6 +58,11 @@ ROWS = (
     ("不支持的语言：{0}", "Unsupported language: {0}", "不支援的語言：{0}", "未対応の言語：{0}", "지원하지 않는 언어: {0}", "Idioma no compatible: {0}"),
     ("语言管理器尚未初始化", "Language manager has not been initialized", "語言管理器尚未初始化", "言語管理機能が初期化されていません", "언어 관리자가 초기화되지 않았습니다", "El gestor de idiomas no está inicializado"),
     ("不支持的主题：{0}", "Unsupported theme: {0}", "不支援的主題：{0}", "未対応のテーマ：{0}", "지원하지 않는 테마: {0}", "Tema no compatible: {0}"),
+    ("晨雾", "Morning Mist", "晨霧", "朝霧", "아침 안개", "Bruma matinal"),
+    ("北境", "Nord", "北境", "ノルド", "노르드", "Nord"),
+    ("猫布奇诺·拿铁", "Catppuccin Latte", "貓布奇諾・拿鐵", "キャップチン・ラテ", "캣푸친 라테", "Catppuccin Latte"),
+    ("猫布奇诺·摩卡", "Catppuccin Mocha", "貓布奇諾・摩卡", "キャップチン・モカ", "캣푸친 모카", "Catppuccin Moca"),
+    ("德古拉", "Dracula", "德古拉", "ドラキュラ", "드라큘라", "Drácula"),
     ("主题管理器尚未初始化", "Theme manager has not been initialized", "主題管理器尚未初始化", "テーマ管理機能が初期化されていません", "테마 관리자가 초기화되지 않았습니다", "El gestor de temas no está inicializado"),
     ("设置文件必须包含 JSON 对象", "Settings must contain a JSON object", "設定檔必須包含 JSON 物件", "設定ファイルには JSON オブジェクトが必要です", "설정 파일에는 JSON 객체가 필요합니다", "La configuración debe contener un objeto JSON"),
     ("日志路径必须位于日志目录内", "Log path must stay inside the log directory", "日誌路徑必須位於日誌目錄內", "ログのパスはログフォルダー内である必要があります", "로그 경로는 로그 폴더 안에 있어야 합니다", "La ruta del registro debe estar dentro de su carpeta"),

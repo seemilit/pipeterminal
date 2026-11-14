@@ -135,6 +135,8 @@ class ServerConfigurationForm(QScrollArea):
         layout.addWidget(paths)
         layout.addStretch(1)
         self.setWidget(page)
+        # The theme paints this page, including its transparent Plus variant.
+        page.setAutoFillBackground(False)
         for control in self.controls.values():
             control.textChanged.connect(self._notify_changed)
         self.port.textChanged.connect(self._notify_changed)

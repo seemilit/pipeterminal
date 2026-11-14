@@ -12,6 +12,7 @@ class LogViewer(QWidget):
     def __init__(self, parent, header=None) -> None:
         super().__init__(parent)
         self.text = QPlainTextEdit()
+        self.text.setProperty("workspaceSurface", True)
         self.text.setReadOnly(True)
         self._match = QTextCursor()
         self._position = 0

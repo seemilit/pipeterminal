@@ -19,7 +19,6 @@ class WindowStateController(QObject):
         except (OSError, ValueError):
             self._state = {}
         self._main_sizes = self._read_sizes("main_splitter_sizes", [280, 820])
-        self._right_sizes = self._read_sizes("right_splitter_sizes", [370, 380])
         selected = self._state.get("selected_items")
         self._selected_items = {
             key: value for key, value in selected.items()
@@ -27,7 +26,6 @@ class WindowStateController(QObject):
         } if isinstance(selected, dict) else {}
         self._restored_pages: set[str] = set()
         window.shell.main_splitter.splitterMoved.connect(self.remember_layout)
-        window.shell.right_splitter.splitterMoved.connect(self.remember_layout)
 
     def _read_sizes(self, key: str, default: list[int]) -> list[int]:
         value = self._state.get(key)
@@ -71,25 +69,17 @@ class WindowStateController(QObject):
         shell = self.window.shell
         shell.sidebar.show()
         shell.main_splitter.setSizes(self._main_sizes)
-        shell.right_splitter.setSizes(self._right_sizes)
         visible = self._state.get("sidebar_visible") is not False
         self.window.sidebar_action.setChecked(visible)
         shell.sidebar.setVisible(visible)
 
     def remember_layout(self, *_args) -> None:
-        main_sizes, right_sizes, _visible = self.window.shell.normal_layout()
+        main_sizes, _visible = self.window.shell.normal_layout()
         if all(size > 0 for size in main_sizes):
             self._main_sizes = list(main_sizes)
-        if all(size > 0 for size in right_sizes):
-            self._right_sizes = list(right_sizes)
-
-    @property
-    def panel_sizes(self) -> list[int]:
-        return list(self._right_sizes)
 
     def reset_layout(self) -> None:
         self._main_sizes = [250, 850]
-        self._right_sizes = [370, 380]
 
     def save(self, module_id: str | None, pages: dict[str, object]) -> None:
         self.remember_layout()
@@ -100,12 +90,11 @@ class WindowStateController(QObject):
                     self._selected_items[identifier] = item_id
                 else:
                     self._selected_items.pop(identifier, None)
-        _main_sizes, _right_sizes, visible = self.window.shell.normal_layout()
+        _main_sizes, visible = self.window.shell.normal_layout()
         self.store.update_section("window", {
             "geometry": bytes(self.window.saveGeometry()).hex(),
             "maximized": self.window.isMaximized(),
             "main_splitter_sizes": self._main_sizes,
-            "right_splitter_sizes": self._right_sizes,
             "sidebar_visible": visible[1],
             "module_id": module_id,
             "selected_items": self._selected_items,

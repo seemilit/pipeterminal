@@ -127,6 +127,7 @@ ROWS = (
     ("上传时保留原名称；文件夹包含自身及全部子目录。失败时停止流程，已完成的文件不会回退。", "Keep original names, including the selected folder and all subfolders. Failure stops the workflow; completed uploads are not rolled back.", "上傳時保留原名稱；資料夾包含自身及全部子目錄。失敗時停止流程，已完成的檔案不會回退。", "元の名前でアップロードし、選択したフォルダーと全サブフォルダーを含みます。失敗時は停止し、完了済みファイルは元に戻しません。", "원래 이름과 폴더 구조를 유지합니다. 실패하면 중지되며 완료된 파일은 되돌리지 않습니다.", "Conserva nombres y subcarpetas. Si falla, se detiene el flujo; los archivos completados no se revierten."),
     ('文件上传', 'File upload', '檔案上傳', 'ファイルアップロード', '파일 업로드', 'Subida de archivos'),
     ('JAR 包', 'JAR package', 'JAR 套件', 'JAR パッケージ', 'JAR 패키지', 'Paquete JAR'),
+    ('上传 JAR 包', 'Upload JAR package', '上傳 JAR 套件', 'JAR パッケージをアップロード', 'JAR 패키지 업로드', 'Subir paquete JAR'),
     ('文件', 'File', '檔案', 'ファイル', '파일', 'Archivo'),
     ('文件夹', 'Folder', '資料夾', 'フォルダー', '폴더', 'Carpeta'),
     ('本地来源', 'Local source', '本機來源', 'ローカルソース', '로컬 원본', 'Origen local'),
@@ -379,6 +380,7 @@ ROWS += (
 
 ROWS += (
     ("插入节点", "Insert node", "插入節點", "ノードを挿入", "노드 삽입", "Insertar nodo"),
+    ("添加节点", "Add node", "新增節點", "ノードを追加", "노드 추가", "Añadir nodo"),
     ("新增并行分支", "Add parallel branch", "新增平行分支", "並列分岐を追加", "병렬 분기 추가", "Añadir rama paralela"),
     ("添加下一步", "Add next step", "新增下一步", "次のステップを追加", "다음 단계 추가", "Añadir siguiente paso"),
     ("连线已变化，请重新选择", "The connection has changed. Select it again.", "連線已變更，請重新選擇", "接続が変更されました。選択し直してください。", "연결이 변경되었습니다. 다시 선택하세요.", "La conexión ha cambiado. Selecciónala de nuevo."),
