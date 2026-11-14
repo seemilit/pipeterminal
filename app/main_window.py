@@ -105,6 +105,8 @@ class MainWindow(QMainWindow):
         self.shell.toolbar.addAction(self.reset_layout_action)
         help_button = self.shell.toolbar.add_action(QAction(tr("帮助"), self), right=True, show_icon=False)
         help_menu = QMenu(help_button)
+        # Older Premium appearance modules add their settings actions to this menu.
+        self._help_menu = help_menu
         self.help_button = help_button
         about_action = QAction(tr("关于 PipeTerminal"), help_menu)
         about_action.triggered.connect(lambda: self._show_about())
