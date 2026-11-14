@@ -1,13 +1,16 @@
 """Basic task page integrated with the shared application shell."""
 
+from collections import deque
 from copy import deepcopy
+from dataclasses import dataclass, field
 from time import time
 from uuid import uuid4
 
 from PySide6.QtCore import QEvent, QSignalBlocker, Qt
-from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QInputDialog, QMenu, QMessageBox, QPlainTextEdit, QSplitter, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QComboBox, QFrame, QHBoxLayout, QInputDialog, QMenu, QMessageBox, QPlainTextEdit, QSplitter, QVBoxLayout
 
 from basic.log.viewer import LogViewer
+from basic.log.writer import LogWriter
 from common.i18n import tr
 from common.i18n.errors import error_message
 from common.licensing.prompt import prompt_activation
@@ -16,7 +19,7 @@ from common.qt.module_page import ModulePage
 from common.settings.store import SettingsStore
 
 from .edit_history import EditHistory
-from .history import RunHistoryDialog, RunHistoryStore, RunHistoryWriter
+from .history import STATES, RunHistoryDialog, RunHistoryStore, RunHistoryWriter
 from .validation import prepare_workflow
 from .graph import (
     PARALLEL_REQUIRED, START, WorkflowUpgradeRequired, append_node, ensure_graph,
@@ -37,6 +40,24 @@ from .wait import WaitDialog
 from .upload import STEP_LABELS as UPLOAD_LABELS, UploadDialog
 
 
+@dataclass
+class WorkflowRun:
+    runner: TaskRunner
+    record: dict
+    writer: LogWriter
+    task_name: str
+    number: int
+    node_ids: tuple[str, ...]
+    states: dict[int, str]
+    output: deque[str] = field(default_factory=lambda: deque(maxlen=3000))
+    artifacts: dict = field(default_factory=dict)
+    conflict_dialog: QDialog | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.record["finished"] is None
+
+
 class TaskPage(ModulePage):
     uses_panel_workspace = True
 
@@ -53,9 +74,10 @@ class TaskPage(ModulePage):
         self._names: list[str] = []
         self._document: dict | None = None
         self._dirty = False
-        self._running = False
-        self._output_task_name = None
-        self._log_writer = None
+        self._runs: dict[str, WorkflowRun] = {}
+        self._selected_runs: dict[str, str] = {}
+        self._displayed_run: WorkflowRun | None = None
+        self._run_number = 0
         self._edit_history = EditHistory()
         self._saved_document = None
         self._history_store = RunHistoryStore(store.directory.parent / "task_history")
@@ -63,29 +85,19 @@ class TaskPage(ModulePage):
         self._history_writer.failed.connect(self._history_write_failed)
         QApplication.instance().aboutToQuit.connect(self._history_writer.close)
         self.destroyed.connect(lambda *_args, writer=self._history_writer: writer.close())
-        self._history_record = None
-        self._history_error = None
         self._history_failure_ids = set()
         self._views_ready = False
         self.execution_services = ExecutionServices(store.directory.parent, self)
         self.execution_services.trust_requested.connect(self._confirm_task_host)
-        self._runner = TaskRunner(self, self.execution_services)
-        self._runner.message.connect(self._log)
-        self._runner.finished.connect(self._finished)
-        self._runner.step_state.connect(self._step_state)
-        self._runner.conflict_requested.connect(self._show_conflicts)
         self._artifacts = {}
-        self._runner.artifacts_ready.connect(self._artifacts_changed)
-        self._runner.shell_requested.connect(self._open_shell_panel)
         self._shell_bridge = None
-        self._conflict_dialog = None
         self.file_actions = {
             "new": self.create_task, "rename": self.rename_task,
             "copy": self.copy_task, "delete": self.delete_task, "save": self.save_task,
-            "execute": self.execute_task,
+            "execute": self.execute_task, "stop": self._choose_run_to_stop,
         }
         self.setObjectName("taskEditor")
-        self.setStyleSheet("QLabel#panelHeading { padding: 6px 2px 10px 2px; font-weight: 600; } QLabel#taskHeading { font-size: 18px; font-weight: 600; } QFrame#taskToolBar QPushButton, QFrame#taskEditBar QPushButton { background: transparent; border: 1px solid transparent; padding: 3px 10px; min-height: 24px; } QFrame#taskToolBar QPushButton:hover:enabled, QFrame#taskEditBar QPushButton:hover:enabled { background: palette(alternate-base); border-color: palette(mid); } QFrame#taskToolBar QPushButton:checked, QFrame#taskToolBar QPushButton:checked:hover:enabled { background: palette(highlight); color: palette(highlighted-text); } QSplitter::handle { background: transparent; } QSplitter::handle:hover { background: palette(midlight); }")
+        self.setStyleSheet("QLabel#panelHeading { padding: 6px 2px 10px 2px; font-weight: 600; } QLabel#taskHeading { font-size: 18px; font-weight: 600; } QFrame#taskToolBar QPushButton { background: transparent; border: 1px solid transparent; padding: 3px 10px; min-height: 24px; } QFrame#taskToolBar QPushButton:hover:enabled { background: palette(alternate-base); border-color: palette(mid); } QSplitter::handle { background: transparent; } QSplitter::handle:hover { background: palette(midlight); }")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
@@ -99,6 +111,12 @@ class TaskPage(ModulePage):
         layout.addLayout(header)
         bar_widget = QFrame()
         bar_widget.setObjectName("taskToolBar")
+        bar_widget.setStyleSheet(
+            "QFrame#taskToolBar QPushButton:checked, "
+            "QFrame#taskToolBar QPushButton:checked:hover:enabled { "
+            "background: palette(highlight); color: palette(highlighted-text); }"
+        )
+        bar_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
         bar = QHBoxLayout(bar_widget)
         bar.setContentsMargins(0, 0, 0, 0)
         bar.setSpacing(4)
@@ -113,20 +131,26 @@ class TaskPage(ModulePage):
         self.add_step.setMenu(menu)
         bar.addWidget(self.add_step)
         self.step_buttons = []
-        for label, action in (("修改", self._edit_step), ("删除", self._remove_step)):
+        for label, action in (("修改", self._edit_step), ("复制", self._copy_step), ("删除", self._remove_step)):
             button = QPushButton(tr(label))
             button.clicked.connect(lambda _checked=False, handler=action: handler())
             bar.addWidget(button)
             self.step_buttons.append(button)
+        self.arrange_button = QPushButton(tr("自动排列"))
+        self.arrange_button.clicked.connect(lambda: self._arrange_steps())
+        bar.addWidget(self.arrange_button)
+        history_button = QPushButton(tr("执行记录"))
+        history_button.clicked.connect(self._open_run_history)
+        bar.addWidget(history_button)
+        bar.addStretch()
         self.resolve_button = QPushButton(tr("解决冲突"))
         self.resolve_button.clicked.connect(self._reopen_conflicts)
         self.resolve_button.hide()
         bar.addWidget(self.resolve_button)
         self.stop_button = QPushButton(tr("停止"))
-        self.stop_button.clicked.connect(self._stop_workflow)
+        self.stop_button.clicked.connect(self._stop_selected_run)
         self.stop_button.hide()
         bar.addWidget(self.stop_button)
-        bar.addStretch()
         self.library_button = QPushButton(tr("模块库"))
         self.library_button.setCheckable(True)
         self.library_button.setChecked(self._library_visible)
@@ -140,23 +164,10 @@ class TaskPage(ModulePage):
             button.setChecked(True)
             button.toggled.connect(self._sync_views)
             bar.addWidget(button)
+        self.output_action = QAction(tr("执行输出"), bar_widget)
+        self.output_action.setCheckable(True)
+        bar_widget.addAction(self.output_action)
         layout.addWidget(bar_widget)
-        tools_widget = QFrame()
-        tools_widget.setObjectName("taskEditBar")
-        tools = QHBoxLayout(tools_widget)
-        tools.setContentsMargins(0, 0, 0, 0)
-        tools.setSpacing(4)
-        self.edit_actions = {}
-        for text, callback in (("撤销", lambda: self._restore_edit()), ("重做", lambda: self._restore_edit(True)), ("复制节点", self._copy_step), ("自动排列", self._arrange_steps), ("校验流程", self._validate_flow), ("执行记录", self._open_run_history)):
-            button = QPushButton(tr(text))
-            button.clicked.connect(lambda _checked=False, handler=callback: handler())
-            tools.addWidget(button)
-            self.edit_actions[text] = button
-        self.output_button = QPushButton(tr("执行输出"))
-        self.output_button.setCheckable(True)
-        tools.addWidget(self.output_button)
-        tools.addStretch()
-        layout.addWidget(tools_widget)
         self.undo_notice = QLabel(tr("流程内容超过撤销内存上限，部分操作将无法撤销或重做。"))
         self.undo_notice.setWordWrap(True)
         self.undo_notice.hide()
@@ -226,11 +237,21 @@ class TaskPage(ModulePage):
         self.editor_splitter.setStretchFactor(2, 1)
         self.editor_splitter.setSizes([220, 760, 340])
         layout.addWidget(self.editor_splitter, 2)
-        self.output_view = LogViewer(self)
+        output_header = QHBoxLayout()
+        output_header.addWidget(QLabel(tr("执行批次")))
+        self.run_choices = QComboBox()
+        self.run_choices.currentIndexChanged.connect(self._select_run)
+        output_header.addWidget(self.run_choices, 1)
+        output_panel = QVBoxLayout()
+        output_panel.addLayout(output_header)
+        self.output_view = LogViewer(self, output_header)
         self.output = self.output_view.text
         self.output.setMaximumBlockCount(3000)
-        self.output_button.toggled.connect(self.output_view.setVisible)
-        layout.addWidget(self.output_view, 1)
+        self.output_panel = QFrame()
+        output_panel.addWidget(self.output_view, 1)
+        self.output_panel.setLayout(output_panel)
+        self.output_action.toggled.connect(self.output_panel.setVisible)
+        layout.addWidget(self.output_panel, 1)
         self._views_ready = True
         self.new_panel_requested.connect(self.create_task)
         self._update_state()
@@ -281,11 +302,17 @@ class TaskPage(ModulePage):
         return True
 
     def is_action_enabled(self, action_id: str) -> bool:
-        if self._running:
-            return False
+        if action_id == "stop":
+            return any(run.active and not run.runner.stop.is_set() for run in self._runs.values())
         if action_id == "execute":
             return self._document is not None and bool(self._document["steps"])
+        if self._running:
+            return action_id in {"new", "copy"}
         return action_id == "new" or (self.current_name is not None and action_id in self.file_actions)
+
+    @property
+    def _running(self) -> bool:
+        return any(run.active and run.task_name == self.current_name for run in self._runs.values())
 
     def create_task(self) -> None:
         if not self.can_leave():
@@ -295,7 +322,7 @@ class TaskPage(ModulePage):
             self._change("create", name)
 
     def rename_task(self) -> None:
-        if self.current_name is None or not self.can_leave():
+        if self._running or self.current_name is None or not self.can_leave():
             return
         name = self._ask_name(tr("重命名"), self.current_name)
         if name is not None and name != self.current_name:
@@ -309,7 +336,7 @@ class TaskPage(ModulePage):
             self._change("copy", self.current_name, name)
 
     def delete_task(self) -> None:
-        if self.current_name is None or not self.can_leave():
+        if self._running or self.current_name is None or not self.can_leave():
             return
         if QMessageBox.question(
             self, tr("删除"), tr("确定删除任务“{0}”吗？", self.current_name),
@@ -319,7 +346,7 @@ class TaskPage(ModulePage):
             self._change("delete", self.current_name)
 
     def save_task(self, show_message: bool = True) -> bool:
-        if self._running or self.current_name is None or self._document is None:
+        if self.current_name is None or self._document is None:
             return False
         try:
             self.store.save(self.current_name, self._document)
@@ -338,15 +365,19 @@ class TaskPage(ModulePage):
         try:
             getattr(self.store, operation)(*names)
             if operation == "delete":
-                if self.current_name == self._output_task_name:
-                    self._output_task_name = None
-                    self.output.clear()
+                self._selected_runs.pop(names[0], None)
+                self._runs = {key: run for key, run in self._runs.items() if run.task_name != names[0]}
                 self.current_name = None
                 self._document = None
                 self._dirty = False
                 self._populate_steps()
-            elif operation == "rename" and names[0] == self._output_task_name:
-                self._output_task_name = names[1]
+            elif operation == "rename":
+                for run in self._runs.values():
+                    if run.task_name == names[0]:
+                        run.task_name = names[1]
+                if names[0] in self._selected_runs:
+                    self._selected_runs[names[1]] = self._selected_runs.pop(names[0])
+                self.directory_item_renamed.emit(*names)
             self._refresh_directory()
             selected = next(iter(self._names), None) if operation == "delete" else names[-1]
             if selected is not None:
@@ -388,11 +419,7 @@ class TaskPage(ModulePage):
         self.directory_changed.emit()
 
     def _update_state(self) -> None:
-        has_output = self._output_task_name is not None and self.current_name == self._output_task_name
-        self.output_button.setEnabled(has_output)
-        if not has_output:
-            self.output_button.setChecked(False)
-        self.output_view.setVisible(has_output and self.output_button.isChecked())
+        self._refresh_run_choices()
         self.title.setText(self.current_name if self.current_name is not None else tr("任务"))
         self.setWindowTitle(self.title.text() + (" *" if self._dirty else ""))
         self.notice.setText(tr("步骤数量：{0}", len(self._document["steps"])) if self._document is not None else tr("暂无任务"))
@@ -407,12 +434,7 @@ class TaskPage(ModulePage):
         self.parameters.wait.setEnabled(editable)
         self.parameters.health.setEnabled(editable)
         self.parameters.shell_panel.setEnabled(editable)
-        self.stop_button.setVisible(self._running)
-        for text, button in self.edit_actions.items():
-            button.setEnabled(editable or text == "执行记录")
-        self.edit_actions["撤销"].setEnabled(editable and bool(self._edit_history.undo_stack))
-        self.edit_actions["重做"].setEnabled(editable and bool(self._edit_history.redo_stack))
-        self.edit_actions["复制节点"].setEnabled(editable and self.steps.currentItem() is not None)
+        self.arrange_button.setEnabled(editable)
         self._update_step_actions()
         entries = self._document["steps"] if self._document is not None else []
         item = self.steps.currentItem()
@@ -532,7 +554,6 @@ class TaskPage(ModulePage):
         item = self.steps.currentItem()
         index = self.steps.indexOfTopLevelItem(item) if item is not None else -1
         enabled = not self._running and index >= 0
-        self.edit_actions["复制节点"].setEnabled(enabled)
         for button in self.step_buttons:
             button.setEnabled(enabled)
         if enabled:
@@ -604,10 +625,12 @@ class TaskPage(ModulePage):
         position = self.flow.insertion_position(endpoints, source_index, direction)
         self._edit_step(adding=True, source_index=source_index, direction=direction, step_type=kind, position=position, replace_link=list(link))
 
-    def _artifacts_changed(self, artifacts):
-        self._artifacts = artifacts
-        self.parameters.upload.artifact_results = artifacts
-        self.parameters.upload.refresh_jars()
+    def _artifacts_changed(self, run, artifacts):
+        run.artifacts = artifacts
+        if run is self._displayed_run:
+            self._artifacts = artifacts
+            self.parameters.upload.artifact_results = artifacts
+            self.parameters.upload.refresh_jars()
 
     def _edit_step(self, *, adding=False, source_index=None, direction="bottom", step_type="MERGE_BRANCH", position=None, replace_link=None):
         if self._running or self._document is None:
@@ -853,7 +876,7 @@ class TaskPage(ModulePage):
             self._update_state()
 
     def _validate_flow(self, show_success=True, *, indexes=None, start_at=None, check_connections=True):
-        if self._document is None or self._running:
+        if self._document is None:
             return False
         try:
             order, predecessors, issues = execution_plan(
@@ -902,21 +925,20 @@ class TaskPage(ModulePage):
         dialog.deleteLater()
         return False
 
-    def _save_run_record(self):
+    def _save_run_record(self, run):
         try:
-            self._history_writer.submit(self._history_record)
+            self._history_writer.submit(run.record)
         except (OSError, ValueError) as error:
-            self._history_write_failed(self._history_record["id"], str(error))
+            self._history_write_failed(run.record["id"], str(error))
 
     def _history_write_failed(self, identifier, message):
-        self._history_error = ValueError(tr("执行记录保存失败：{0}", message))
         if identifier in self._history_failure_ids:
             return
         self._history_failure_ids.add(identifier)
         dialog = QMessageBox(self)
         dialog.setWindowTitle(tr("执行记录"))
         dialog.setIcon(QMessageBox.Icon.Warning)
-        dialog.setText(str(self._history_error))
+        dialog.setText(tr("执行记录保存失败：{0}", message))
         dialog.finished.connect(lambda _result: dialog.deleteLater())
         dialog.open()
 
@@ -926,7 +948,8 @@ class TaskPage(ModulePage):
         if service is not None:
             roots.append(service.store.directory)
         try:
-            dialog = RunHistoryDialog(self._history_store, STEP_LABELS, roots, self._history_record["id"] if self._history_record else None, self, pending=self._history_writer.snapshot())
+            run_id = self.run_choices.currentData()
+            dialog = RunHistoryDialog(self._history_store, STEP_LABELS, roots, run_id, self, pending=self._history_writer.snapshot())
             dialog.exec()
             dialog.deleteLater()
         except (OSError, ValueError) as error:
@@ -937,63 +960,129 @@ class TaskPage(ModulePage):
             self._shell_bridge = ShellPanelBridge(self.registry, self)
         self._shell_bridge.open(request)
 
-    def _stop_workflow(self):
-        if not self._running or self._runner.stop.is_set():
+    def _run_label(self, run):
+        state = "正在停止，请等待执行结束" if run.active and run.runner.stop.is_set() else STATES[run.record["state"]]
+        return tr("执行 #{0} · {1} · {2}", run.number, run.task_name, tr(state))
+
+    def _refresh_run_choices(self):
+        task_name = self.current_name
+        preferred_id = self._selected_runs.get(task_name)
+        with QSignalBlocker(self.run_choices):
+            self.run_choices.clear()
+            for identifier, run in reversed(self._runs.items()):
+                if run.task_name == task_name:
+                    self.run_choices.addItem(self._run_label(run), identifier)
+            self.run_choices.setCurrentIndex(max(0, self.run_choices.findData(preferred_id)))
+        self._select_run()
+        has_output = self.run_choices.count() > 0
+        self.output_action.setEnabled(has_output)
+        self.output_panel.setVisible(has_output and self.output_action.isChecked())
+
+    def _select_run(self, _index=-1):
+        identifier = self.run_choices.currentData()
+        run = self._runs.get(identifier)
+        if run is not None:
+            self._selected_runs[run.task_name] = identifier
+        if run is not self._displayed_run:
+            self._displayed_run = run
+            self.output.setPlainText("\n".join(run.output) if run else "")
+            self.output.verticalScrollBar().setValue(self.output.verticalScrollBar().maximum())
+            if run is not None:
+                self._artifacts_changed(run, run.artifacts)
+            else:
+                self._clear_artifacts()
+            self._display_run_states()
+        self.stop_button.setVisible(run is not None and run.active)
+        self.stop_button.setEnabled(run is not None and run.active and not run.runner.stop.is_set())
+        self.resolve_button.setVisible(run is not None and run.conflict_dialog is not None)
+
+    def _clear_artifacts(self):
+        self._artifacts = {}
+        self.parameters.upload.artifact_results = self._artifacts
+        self.parameters.upload.refresh_jars()
+
+    def _display_run_states(self):
+        self.flow.clear_states()
+        run = self._displayed_run
+        if run is None or self._document is None:
             return
-        self._runner.stop.set()
-        self.stop_button.setEnabled(False)
+        current = {step["node_id"]: index for index, step in enumerate(self._document["steps"])}
+        for index, state in run.states.items():
+            node_index = current.get(run.node_ids[index])
+            if node_index is not None:
+                self.flow.set_step_state(node_index, state)
+
+    def _choose_run_to_stop(self):
+        running = [run for run in self._runs.values() if run.active and not run.runner.stop.is_set()]
+        if len(running) == 1:
+            self._stop_workflow(running[0])
+        elif running:
+            labels = [str(self._run_label(run)) for run in running]
+            label, accepted = QInputDialog.getItem(self.window(), tr("停止任务"), tr("选择要停止的执行批次"), labels, editable=False)
+            if accepted:
+                self._stop_workflow(running[labels.index(label)])
+
+    def _stop_selected_run(self):
+        self._stop_workflow(self._displayed_run)
+
+    def _stop_workflow(self, run):
+        if run is None or not run.active or run.runner.stop.is_set():
+            return
+        run.runner.stop.set()
         message = tr("正在停止，请等待执行结束")
-        self._log(message)
+        self._log(run, message)
         self.status_changed.emit(message)
-        if self._conflict_dialog is not None:
-            dialog = self._conflict_dialog
+        self._refresh_run_choices()
+        self.actions_changed.emit()
+        if run.conflict_dialog is not None:
+            dialog = run.conflict_dialog
             dialog.reject()
             dialog.done(QDialog.DialogCode.Rejected)
 
-    def _show_conflicts(self, request):
-        if self._runner.stop.is_set():
+    def _show_conflicts(self, run, request):
+        if run.runner.stop.is_set():
             request["event"].set()
             return
         from .git.conflict_dialog import ConflictDialog
         try:
             dialog = ConflictDialog(request, self)
-            dialog.setWindowTitle(tr("解决冲突：{0}", self.current_name))
-            self._conflict_dialog = dialog
-            dialog.finished.connect(lambda result: self._conflicts_finished(request, dialog, result))
-            self.resolve_button.show()
+            dialog.setWindowTitle(tr("解决冲突：{0}", self._run_label(run)))
+            run.conflict_dialog = dialog
+            dialog.finished.connect(lambda result: self._conflicts_finished(run, request, dialog, result))
+            self._select_run()
             dialog.show()
         except Exception as exc:
             request["event"].set()
             self._show_error(exc)
 
-    def _conflicts_finished(self, request, dialog, result):
+    def _conflicts_finished(self, run, request, dialog, result):
         request["answer"] = dict(dialog.resolutions) if result == QDialog.DialogCode.Accepted else None
-        self._conflict_dialog = None
-        self.resolve_button.hide()
+        run.conflict_dialog = None
+        self._select_run()
         request["event"].set()
         dialog.deleteLater()
 
     def _reopen_conflicts(self):
-        if self._conflict_dialog is not None:
-            self._conflict_dialog.show()
-            self._conflict_dialog.raise_()
-            self._conflict_dialog.activateWindow()
+        dialog = self._displayed_run.conflict_dialog if self._displayed_run else None
+        if dialog is not None:
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
 
-    def _step_state(self, index, state):
-        if self._history_record is not None and index < len(self._history_record["steps"]):
-            step = self._history_record["steps"][index]
+    def _step_state(self, run, index, state):
+        if index < len(run.record["steps"]):
+            step = run.record["steps"][index]
             step["state"] = state
             if state == "running" and step["started"] is None:
                 step["started"] = time()
             if state in {"success", "failed"}:
                 step["finished"] = time()
-            self._save_run_record()
-        self.flow.set_step_state(index, state)
+            self._save_run_record(run)
+            run.states[index] = state
+            if run is self._displayed_run:
+                self._display_run_states()
 
     def can_leave(self) -> bool:
-        if self._running:
-            QMessageBox.information(self, tr("任务"), tr("任务正在执行，请等待完成"))
-            return False
         if not self._dirty:
             return True
         answer = QMessageBox.question(
@@ -1013,6 +1102,9 @@ class TaskPage(ModulePage):
         return False
 
     def can_close(self) -> bool:
+        if any(run.active for run in self._runs.values()):
+            QMessageBox.information(self, tr("任务"), tr("任务正在执行，请等待完成"))
+            return False
         return self.can_leave()
 
     def _execute_from_step(self, index):
@@ -1029,71 +1121,94 @@ class TaskPage(ModulePage):
         )
         if not run_indexes:
             return
-        if not self.save_task(show_message=False):
+        if (self._dirty or not self._running) and not self.save_task(show_message=False):
             return
+        document = deepcopy(self._document)
+        task_name = self.current_name
         service = self.registry.get_service("log")
-        if service is not None:
-            try:
-                self._log_writer = service.open_session("task", self.current_name)
-            except (OSError, ValueError) as exc:
-                self._show_error(exc)
-                return
+        writer = None
         try:
-            if self._log_writer is None:
-                from basic.log.writer import LogWriter
-                self._log_writer = LogWriter(self._history_store.directory / "logs" / (uuid4().hex + ".log"))
-            self._history_error = None
-            self._history_failure_ids.clear()
-            self._history_record = self._history_store.create(self.current_name, self._document["steps"], self._log_writer.path)
-            self._history_writer.submit(self._history_record)
+            writer = (
+                service.open_session("task", task_name) if service is not None
+                else LogWriter(self._history_store.directory / "logs" / (uuid4().hex + ".log"))
+            )
+            record = self._history_store.create(task_name, document["steps"], writer.path)
+            self._history_writer.submit(record)
         except (OSError, ValueError) as error:
-            if self._log_writer is not None:
-                self._log_writer.close()
-                self._log_writer = None
+            if writer is not None:
+                writer.close()
             self._show_error(error)
             return
-        self.output.clear()
-        self._output_task_name = self.current_name
-        self.output_button.setChecked(True)
-        self._running = True
-        self.stop_button.setEnabled(True)
-        self.flow.clear_states(waiting_indexes=run_indexes)
-        self._update_state()
+        runner = TaskRunner(self, self.execution_services)
+        self._run_number += 1
+        run = WorkflowRun(
+            runner, record, writer, task_name, self._run_number,
+            tuple(step["node_id"] for step in document["steps"]),
+            dict.fromkeys(run_indexes, "waiting"),
+        )
+        runner.message.connect(lambda message: self._log(run, message), Qt.ConnectionType.QueuedConnection)
+        runner.finished.connect(lambda success, message: self._finished(run, success, message), Qt.ConnectionType.QueuedConnection)
+        runner.step_state.connect(lambda index, state: self._step_state(run, index, state), Qt.ConnectionType.QueuedConnection)
+        runner.conflict_requested.connect(lambda request: self._show_conflicts(run, request), Qt.ConnectionType.QueuedConnection)
+        runner.artifacts_ready.connect(lambda artifacts: self._artifacts_changed(run, artifacts), Qt.ConnectionType.QueuedConnection)
+        runner.shell_requested.connect(self._open_shell_panel)
+        artifacts = self._artifacts
+        self._runs[record["id"]] = run
+        self._selected_runs[task_name] = record["id"]
+        self.output_action.setChecked(True)
         try:
-            self._runner.start(
-                deepcopy(self._document), indexes=indexes, start_at=start_at,
+            runner.start(
+                document, indexes=indexes, start_at=start_at,
                 check_connections=check_connections, scheduler=self._parallel_scheduler(),
-                artifacts=self._artifacts,
+                artifacts=artifacts,
             )
         except RuntimeError as exc:
-            self._finished(False, tr("任务失败：{0}", error_message(exc)))
+            self._finished(run, False, tr("任务失败：{0}", error_message(exc)))
+        else:
+            self._update_state()
 
-    def _log(self, message):
-        self.output.appendPlainText(str(message))
-        if self._log_writer is not None:
-            self._log_writer.event("task", str(message))
+    def _log(self, run, message):
+        text = str(message)
+        run.output.extend(text.split("\n"))
+        if run is self._displayed_run:
+            self.output.appendPlainText(text)
+        run.writer.event("task", text)
 
-    def _finished(self, success, message):
-        self._running = False
-        self._log(message)
-        if self._history_record is not None:
-            self._history_record["finished"] = time()
-            self._history_record["state"] = "success" if success else "stopped" if self._runner.stop.is_set() else "failed"
-            self._history_record["message"] = str(message)
-            if self._runner.stop.is_set():
-                for step in self._history_record["steps"]:
-                    if step["state"] == "failed":
-                        step["state"] = "stopped"
-            self._save_run_record()
-            self._history_record = None
-        if self._log_writer is not None:
-            self._log_writer.close()
-            self._log_writer = None
-        self.status_changed.emit(message)
+    def _finished(self, run, success, message):
+        self._log(run, message)
+        stopped = not success and run.runner.stop.is_set()
+        run.record["finished"] = time()
+        run.record["state"] = "success" if success else "stopped" if stopped else "failed"
+        run.record["message"] = str(message)
+        if stopped:
+            for index, step in enumerate(run.record["steps"]):
+                if step["state"] == "failed":
+                    step["state"] = "stopped"
+                    run.states.pop(index, None)
+        run.states = {index: state for index, state in run.states.items() if state in {"success", "failed"}}
+        self._save_run_record(run)
+        run.writer.close()
+        run.runner.deleteLater()
+        if run is self._displayed_run:
+            self._display_run_states()
+            self.parameters.upload.refresh_jars()
+        result = tr("{0}：{1}", self._run_label(run), message)
+        self.status_changed.emit(result)
+        completed = [key for key, other in self._runs.items() if other.task_name == run.task_name and not other.active]
+        selected_id = self._selected_runs.get(run.task_name)
+        for key in completed[:-10]:
+            if key != selected_id:
+                del self._runs[key]
         self._update_state()
-        self.parameters.upload.refresh_jars()
         if not success:
-            QMessageBox.warning(self, tr("任务"), message)
+            dialog = QMessageBox(self.window())
+            dialog.setIcon(QMessageBox.Icon.Warning)
+            dialog.setWindowTitle(tr("任务"))
+            dialog.setTextFormat(Qt.TextFormat.PlainText)
+            dialog.setText(result)
+            dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+            dialog.finished.connect(lambda _result: dialog.deleteLater())
+            dialog.open()
 
     def _show_error(self, error: Exception) -> None:
         if isinstance(error, WorkflowUpgradeRequired):

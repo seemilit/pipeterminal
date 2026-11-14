@@ -1,7 +1,9 @@
 """Directory list populated by the currently active feature."""
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QHBoxLayout,
     QListWidget,
@@ -14,9 +16,63 @@ from common.i18n.widgets import QLabel
 from common.i18n import tr
 
 
+class _DirectoryList(QListWidget):
+    order_changed = Signal(list)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._dragged_item: QListWidgetItem | None = None
+        self.setDropIndicatorShown(True)
+
+    def item_ids(self) -> list[str]:
+        return [self.item(row).data(Qt.ItemDataRole.UserRole) for row in range(self.count())]
+
+    def startDrag(self, _supported_actions) -> None:
+        item = self.currentItem()
+        if item is None:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(self.mimeData([item]))
+        self._dragged_item = item
+        try:
+            drag.exec(Qt.DropAction.MoveAction)
+        finally:
+            self._dragged_item = None
+            drag.deleteLater()
+
+    def dropEvent(self, event) -> None:
+        if event.source() is not self or self._dragged_item is None:
+            event.ignore()
+            return
+        source = self.currentItem()
+        if source is not self._dragged_item:
+            event.ignore()
+            return
+        old_row = self.row(source)
+        point = event.position().toPoint()
+        index = self.indexAt(point)
+        if index.isValid():
+            new_row = index.row() + int(point.y() > self.visualRect(index).center().y())
+        else:
+            new_row = next(
+                (row for row in range(self.count()) if point.y() < self.visualItemRect(self.item(row)).top()),
+                self.count(),
+            )
+        if new_row > old_row:
+            new_row -= 1
+        if new_row != old_row:
+            with QSignalBlocker(self):
+                self.insertItem(new_row, self.takeItem(old_row))
+                self.setCurrentItem(source)
+            self.order_changed.emit(self.item_ids())
+        event.setDropAction(Qt.DropAction.MoveAction)
+        event.accept()
+
+
 class DirectoryPanel(QFrame):
     item_selected = Signal(str)
     item_activated = Signal(str)
+    order_changed = Signal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -38,12 +94,17 @@ class DirectoryPanel(QFrame):
         heading_layout.addWidget(self.heading, 1)
         heading_layout.addWidget(self.count_label)
         layout.addWidget(header)
-        self.item_list = QListWidget()
+        self.item_list = _DirectoryList()
         self.item_list.setObjectName("directoryList")
         self.item_list.setSpacing(3)
         self.item_list.currentItemChanged.connect(self._select_item)
         self.item_list.itemDoubleClicked.connect(self._activate_item)
+        self.item_list.order_changed.connect(self.order_changed)
         layout.addWidget(self.item_list, 1)
+
+    def set_reorder_enabled(self, enabled: bool) -> None:
+        mode = QAbstractItemView.DragDropMode
+        self.item_list.setDragDropMode(mode.InternalMove if enabled else mode.NoDragDrop)
 
     def set_heading(self, text):
         self.heading.setText(text)
@@ -53,6 +114,7 @@ class DirectoryPanel(QFrame):
             raise ValueError(tr("目录项已存在：{0}", item_id))
         item = QListWidgetItem(name)
         item.setData(Qt.ItemDataRole.UserRole, item_id)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
         self._items[item_id] = item
         self.item_list.addItem(item)
         self.count_label.setText(str(len(self._items)))
@@ -63,11 +125,7 @@ class DirectoryPanel(QFrame):
         self.count_label.setText("0")
 
     def set_items(self, items: list[tuple[str, str]]) -> None:
-        current = [
-            self.item_list.item(index).data(Qt.ItemDataRole.UserRole)
-            for index in range(self.item_list.count())
-        ]
-        if current != [item_id for item_id, _name in items]:
+        if self.item_list.item_ids() != [item_id for item_id, _name in items]:
             self.clear()
             for item_id, name in items:
                 self.add_item(item_id, name)

@@ -5,7 +5,32 @@ https://catppuccin.com/palette/
 https://draculatheme.com/spec
 """
 
+import re
 from dataclasses import dataclass
+
+from common.i18n import tr
+
+
+COLOR_FIELDS = (
+    ("background", "窗口背景"), ("surface", "面板底色"), ("sidebar", "侧栏底色"),
+    ("foreground", "正文颜色"), ("muted", "次要文字"), ("border", "边框颜色"),
+    ("hover", "悬浮底色"), ("accent", "强调色"), ("selection", "选中底色"),
+    ("selection_text", "选中文字"),
+)
+
+
+def normalize_color(value: object) -> str:
+    value = value.strip() if isinstance(value, str) else ""
+    if re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
+        return value.lower()
+    match = re.fullmatch(
+        r"rgb\(\s*([0-9]{1,3})\s*,\s*([0-9]{1,3})\s*,\s*([0-9]{1,3})\s*\)", value, re.IGNORECASE
+    )
+    if match:
+        rgb = tuple(map(int, match.groups()))
+        if max(rgb) <= 255:
+            return "#" + "".join(f"{component:02x}" for component in rgb)
+    raise ValueError(tr("请输入 #RRGGBB 或 rgb(r, g, b)，RGB 分量必须在 0 到 255 之间。"))
 
 
 @dataclass(frozen=True)

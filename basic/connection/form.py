@@ -2,10 +2,11 @@
 
 from PySide6.QtCore import QEvent, QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtWidgets import (
-    QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QMessageBox, QScrollArea,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QButtonGroup, QFrame, QHBoxLayout, QMessageBox, QScrollArea,
+    QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
+from common.qt.file_dialog import choose_file
 from common.i18n import tr
 from common.i18n.errors import error_message
 from common.i18n.widgets import QFormLayout, QLabel, QLineEdit, QPushButton, QToolButton
@@ -62,14 +63,24 @@ class ServerConfigurationForm(QScrollArea):
         address_layout = QHBoxLayout(address_row)
         address_layout.setContentsMargins(0, 0, 0, 0)
         self.controls["IP_ADDRESS"].setMaximumWidth(300)
-        address_layout.addWidget(self.controls["IP_ADDRESS"], 1)
+        self._address_stack, self._masked_address = self._endpoint_field(self.controls["IP_ADDRESS"], 300)
+        address_layout.addWidget(self._address_stack, 1)
         address_layout.addWidget(QLabel(tr("SSH 端口")))
         self.port = QLineEdit("22")
         self.port.setFixedWidth(80)
-        address_layout.addWidget(self.port)
+        self._port_stack, self._masked_port = self._endpoint_field(self.port, 80)
+        self._port_stack.setFixedWidth(80)
+        address_layout.addWidget(self._port_stack)
+        self._endpoint_privacy = None
+        self.controls["IP_ADDRESS"].textChanged.connect(self._refresh_endpoint_fields)
         address_layout.addStretch(1)
         fields.addRow(tr("服务器地址"), address_row)
-        fields.addRow(tr("登录账号"), self.controls["USERNAME"])
+        username_row = QWidget()
+        self._username_layout = QHBoxLayout(username_row)
+        self._username_layout.setContentsMargins(0, 0, 0, 0)
+        self._username_layout.setSpacing(4)
+        self._username_layout.addWidget(self.controls["USERNAME"], 1, Qt.AlignmentFlag.AlignVCenter)
+        fields.addRow(tr("登录账号"), username_row)
         auth_mode = QFrame()
         auth_mode.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         auth_mode.setFixedHeight(30)
@@ -91,16 +102,16 @@ class ServerConfigurationForm(QScrollArea):
         fields.addRow(tr("认证方式"), auth_mode)
         self._password_label = QLabel(tr("登录密码"))
         password_row = QWidget()
-        password_layout = QHBoxLayout(password_row)
-        password_layout.setContentsMargins(0, 0, 0, 0)
-        password_layout.setSpacing(4)
-        password_layout.addWidget(self.controls["PASSWORD"], 1, Qt.AlignmentFlag.AlignVCenter)
+        self._password_layout = QHBoxLayout(password_row)
+        self._password_layout.setContentsMargins(0, 0, 0, 0)
+        self._password_layout.setSpacing(4)
+        self._password_layout.addWidget(self.controls["PASSWORD"], 1, Qt.AlignmentFlag.AlignVCenter)
         self.password_visibility_button = QToolButton()
         self.password_visibility_button.setObjectName("passwordVisibilityButton")
         self.password_visibility_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.password_visibility_button.setFixedSize(28, 28)
         self.password_visibility_button.setIconSize(QSize(16, 16))
-        password_layout.addWidget(self.password_visibility_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._password_layout.addWidget(self.password_visibility_button, 0, Qt.AlignmentFlag.AlignVCenter)
         self.set_password_visibility_available(False)
         self._password_row = password_row
         fields.addRow(self._password_label, password_row)
@@ -144,6 +155,31 @@ class ServerConfigurationForm(QScrollArea):
         self.key_auth.toggled.connect(self._auth_changed)
         self._update_auth_visibility()
         self._apply_basic_parameters_visibility()
+
+    @staticmethod
+    def _endpoint_field(editor, width):
+        stack = QStackedWidget()
+        stack.setMaximumWidth(width)
+        masked = QLineEdit()
+        masked.setReadOnly(True)
+        stack.addWidget(editor)
+        stack.addWidget(masked)
+        return stack, masked
+
+    def bind_endpoint_privacy(self, privacy) -> None:
+        if privacy is not None and self._endpoint_privacy is None:
+            self._endpoint_privacy = privacy
+            privacy.endpoint_visibility_changed.connect(self._refresh_endpoint_fields)
+            self._refresh_endpoint_fields()
+
+    def _refresh_endpoint_fields(self, *_args) -> None:
+        privacy = self._endpoint_privacy
+        hidden = privacy is not None and privacy.endpoint_hidden
+        if hidden:
+            self._masked_address.setText(privacy.display_host(self.controls["IP_ADDRESS"].text()))
+            self._masked_port.setText(privacy.display_port(self.port.text()))
+        self._address_stack.setCurrentIndex(int(hidden))
+        self._port_stack.setCurrentIndex(int(hidden))
 
     def _toggle_basic_parameters(self) -> None:
         self._basic_parameters_visible = not self._basic_parameters_visible
@@ -255,22 +291,36 @@ class ServerConfigurationForm(QScrollArea):
 
     def _update_auth_visibility(self) -> None:
         password_login = self.password_auth.isChecked()
+        layout = self._password_layout if password_login else self._username_layout
+        if layout.indexOf(self.password_visibility_button) < 0:
+            hidden = self.password_visibility_button.isHidden()
+            layout.addWidget(self.password_visibility_button, 0, Qt.AlignmentFlag.AlignVCenter)
+            self.password_visibility_button.setVisible(not hidden)
         self._password_label.setVisible(password_login)
         self._password_row.setVisible(password_login)
         self._key_label.setVisible(not password_login)
         self._key_row.setVisible(not password_login)
+        self.update_password_visibility()
 
     def set_password_visibility_available(self, available: bool) -> None:
         self.hide_password()
         self.password_visibility_button.setVisible(available)
 
     def hide_password(self) -> None:
-        self.controls["PASSWORD"].setEchoMode(QLineEdit.EchoMode.Password)
+        for field in self.credential_fields():
+            field.setEchoMode(QLineEdit.EchoMode.Password)
         self.update_password_visibility()
 
+    def credential_fields(self) -> tuple[QLineEdit, QLineEdit]:
+        return self.controls["USERNAME"], self.controls["PASSWORD"]
+
     def update_password_visibility(self) -> None:
-        revealed = self.controls["PASSWORD"].echoMode() == QLineEdit.EchoMode.Normal
-        label = tr("隐藏密码" if revealed else "显示密码")
+        revealed = self.controls["USERNAME"].echoMode() == QLineEdit.EchoMode.Normal
+        label = tr(
+            ("隐藏账号和密码" if revealed else "显示账号和密码")
+            if self.password_auth.isChecked()
+            else ("隐藏登录账号" if revealed else "显示登录账号")
+        )
         self.password_visibility_button.setText(label)
         self.password_visibility_button.setToolTip(label)
         self.password_visibility_button.setIcon(create_icon("eye" if revealed else "eye_off"))
@@ -281,7 +331,7 @@ class ServerConfigurationForm(QScrollArea):
             self.update_password_visibility()
 
     def _choose_key(self) -> None:
-        path, _filter = QFileDialog.getOpenFileName(
+        path, _filter = choose_file(
             self, tr("选择文件"), self.controls["KEY_FILENAME"].text(),
         )
         if path:

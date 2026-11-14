@@ -3,8 +3,9 @@ from pathlib import Path
 from copy import deepcopy
 from threading import Event, Thread
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtWidgets import QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QMessageBox, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QMessageBox, QSpinBox, QVBoxLayout, QWidget
 from basic.log.viewer import LogViewer
+from common.qt.file_dialog import choose_directory
 from common.i18n import tr
 from common.i18n.widgets import QDialog, QLabel, QLineEdit, QPushButton
 from .code_editor import CodeEditor
@@ -297,7 +298,7 @@ class ExecutionParameterEditor(QWidget):
         self.changed.emit(self.values())
 
     def _browse_directory(self):
-        value = QFileDialog.getExistingDirectory(self, tr("选择目录"))
+        value = choose_directory(self, tr("选择目录"))
         if value:
             self.fields["WORKING_DIRECTORY"].setText(value)
             self._changed()

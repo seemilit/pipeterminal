@@ -11,8 +11,6 @@ QFrame#mainToolbar {{ background: {theme.surface}; border: 0; border-bottom: 1px
 QFrame#editorToolbar {{ background: {theme.surface}; border: 0; border-bottom: 1px solid {theme.border}; }}
 QWidget#applicationStatusBar {{ background: {theme.sidebar}; border-top: 1px solid {theme.border}; }}
 QLabel#applicationStatusText {{ color: {theme.muted}; }}
-QProgressBar#applicationProgress {{ min-height: 12px; max-height: 12px; border: 0; border-radius: 6px; font-size: 10px; }}
-QProgressBar#applicationProgress::chunk {{ background: {theme.accent}; border-radius: 6px; }}
 QFrame#bottomPanel, QStackedWidget#mainPages {{
     background: {theme.surface}; border: 0; border-radius: 0;
 }}
@@ -118,12 +116,6 @@ QToolButton#panelCloseButton:hover {{
 QToolButton#panelCloseButton:pressed {{
     background: {theme.selection}; color: {theme.selection_text};
 }}
-QAbstractScrollArea#shellTerminal {{
-    background: #111827; color: #e5e7eb; border: 0;
-    selection-background-color: #374151; selection-color: #ffffff;
-}}
-QAbstractScrollArea#shellTerminal QScrollBar {{ background: #111827; }}
-QAbstractScrollArea#shellTerminal QScrollBar::handle {{ background: #475569; }}
 QWidget#serverStatusPanel {{ background: {theme.surface}; }}
 QWidget#serverStatusPanel QLabel#monitorTitle {{ font-weight: 600; padding: 4px 0; }}
 QWidget#serverStatusPanel QLabel#monitorStatus {{ color: {theme.muted}; }}

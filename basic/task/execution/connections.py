@@ -23,6 +23,7 @@ class ExecutionServices(QObject):
         self._worker = local()
         self._lock = Lock()
         self._trust_lock = Lock()
+        self._project_locks = {}
         QApplication.instance().aboutToQuit.connect(self.close)
         self.destroyed.connect(lambda: self.close())
 
@@ -46,6 +47,28 @@ class ExecutionServices(QObject):
             clients = [self._clients.pop(key)[1] for key in keys]
         for client in clients:
             client.close()
+
+    @contextmanager
+    def lock_projects(self, paths, stop, on_wait):
+        with self._lock:
+            locks = [self._project_locks.setdefault(path, Lock()) for path in paths]
+        acquired = []
+        notified = False
+        try:
+            for lock in locks:
+                while not stop.is_set():
+                    if lock.acquire(timeout=0.1):
+                        acquired.append(lock)
+                        break
+                    if not notified:
+                        notified = True
+                        on_wait()
+                if stop.is_set():
+                    raise RuntimeError(tr("执行已停止"))
+            yield
+        finally:
+            for lock in reversed(acquired):
+                lock.release()
 
     def connection(self, name, log):
         import paramiko

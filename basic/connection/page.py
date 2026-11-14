@@ -47,6 +47,7 @@ class ConnectionPage(ModulePage):
 
     def bind_registry(self, registry) -> None:
         super().bind_registry(registry)
+        self.form.bind_endpoint_privacy(registry.get_service("window_appearance"))
         authorization = registry.get_service("authorization")
         if authorization is not self._authorization:
             if self._authorization is not None:
@@ -117,11 +118,11 @@ class ConnectionPage(ModulePage):
     def toggle_password_visibility(self) -> None:
         policy = self._password_policy()
         if policy is not None:
-            policy.toggle(self.form.controls["PASSWORD"])
+            policy.toggle(*self.form.credential_fields())
             self.form.update_password_visibility()
         else:
             self.form.hide_password()
-            prompt_activation(self.registry, self, tr("密码显示"))
+            prompt_activation(self.registry, self, tr("显示登录信息"))
 
     def _password_policy(self):
         registry = getattr(self, "registry", None)
@@ -223,6 +224,7 @@ class ConnectionPage(ModulePage):
                     self._retained_shell_pages[page] = (panel_id, name)
                     page.set_configuration(name, self._saved_configuration)
                     page.setWindowTitle(f"{name} Shell")
+            self.directory_item_renamed.emit(self.current_name, name)
             self.current_name = name
             self._refresh_directory()
             self._update_state()

@@ -10,6 +10,7 @@ class ModulePage(QWidget):
     uses_panel_workspace = False
 
     directory_changed = Signal()
+    directory_item_renamed = Signal(str, str)
     actions_changed = Signal()
     status_changed = Signal(object)
     bottom_panel_requested = Signal(str, object, object)

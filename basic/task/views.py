@@ -748,13 +748,13 @@ class TaskFlowView(QGraphicsView):
             node.update()
 
     def contextMenuEvent(self, event):
-        if not self._editable:
-            return
         item = self.itemAt(event.pos())
         if isinstance(item, _FlowNode):
             index = item.data(0)
+            if index < 0 and not self._editable:
+                return
             menu = QMenu(self)
-            add = menu.addAction(str(tr("添加节点")))
+            add = menu.addAction(str(tr("添加节点"))) if self._editable else None
             if index < 0:
                 try:
                     if menu.exec(event.globalPos()) is add:
@@ -767,15 +767,19 @@ class TaskFlowView(QGraphicsView):
                 self.select_step(index, reveal=False)
                 self.step_selected.emit(index)
             selected = self.selected_step_indexes()
-            menu.addSeparator()
-            remove = menu.addAction(str(tr("删除节点")))
-            menu.addSeparator()
+            remove = None
+            if self._editable:
+                menu.addSeparator()
+                remove = menu.addAction(str(tr("删除节点")))
+                menu.addSeparator()
             run_from = menu.addAction(str(tr("从此节点开始执行")))
             run_one = menu.addAction(str(tr("执行此节点")))
             run_selected = menu.addAction(str(tr("仅执行选中节点")))
             run_selected.setEnabled(len(selected) > 1)
             try:
                 action = menu.exec(event.globalPos())
+                if action is None:
+                    return
                 if action is add:
                     self._open_add_menu(event.globalPos(), index=index, direction="bottom")
                 elif action is remove:
@@ -788,7 +792,7 @@ class TaskFlowView(QGraphicsView):
                     self.run_only_requested.emit(selected)
             finally:
                 menu.deleteLater()
-        elif item in self._edges:
+        elif self._editable and item in self._edges:
             index = item.data(0)
             menu = QMenu(self)
             try:

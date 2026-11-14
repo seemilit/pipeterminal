@@ -22,13 +22,18 @@ def register_translations() -> None:
 
 def create_page() -> QWidget:
     from basic.connection.api import ServerConfigStore
+    from basic.theme.manager import get_manager
     from .page import ShellPage
 
     root = (
         Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
         else Path(__file__).resolve().parents[2]
     )
-    return ShellPage(ServerConfigStore(root / "conf" / "host"), root / "conf" / "known_hosts")
+    page = ShellPage(ServerConfigStore(root / "conf" / "host"), root / "conf" / "known_hosts")
+    themes = get_manager()
+    page.terminal.set_color_theme(themes.shell_palette)
+    themes.shell_theme_changed.connect(page.terminal.set_color_theme)
+    return page
 
 
 def get_module() -> ModuleDescriptor:

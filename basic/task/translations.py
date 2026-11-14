@@ -232,6 +232,11 @@ ROWS += (
     ("选择节点后可直接修改参数", "Select a node to edit its parameters", "選擇節點後可直接修改參數", "ノードを選択してパラメータを編集", "노드를 선택하여 매개변수 편집", "Seleccione un nodo para editar sus parámetros"),
     ("等待执行", "Waiting", "等待執行", "待機中", "대기 중", "En espera"),
     ("正在执行", "Running", "正在執行", "実行中", "실행 중", "En ejecución"),
+    ("执行批次", "Run", "執行批次", "実行履歴", "실행 회차", "Ejecución"),
+    ("执行 #{0} · {1} · {2}", "Run #{0} · {1} · {2}", "執行 #{0} · {1} · {2}", "実行 #{0} · {1} · {2}", "실행 #{0} · {1} · {2}", "Ejecución #{0} · {1} · {2}"),
+    ("停止任务", "Stop task", "停止任務", "タスクを停止", "작업 중지", "Detener tarea"),
+    ("选择要停止的执行批次", "Select the run to stop", "選擇要停止的執行批次", "停止する実行を選択", "중지할 실행을 선택하세요", "Selecciona la ejecución que quieres detener"),
+    ("项目目录正在被另一批次使用，等待释放。", "Waiting for another run to release the project directory.", "專案目錄正由另一批次使用，等待釋放。", "別の実行が使用中のプロジェクトディレクトリを待機しています。", "다른 실행이 프로젝트 디렉터리를 해제하기를 기다리는 중입니다.", "Esperando a que otra ejecución libere el directorio del proyecto."),
     ("执行成功", "Succeeded", "執行成功", "成功", "성공", "Completado"),
     ("执行失败", "Failed", "執行失敗", "失敗", "실패", "Error"),
 )

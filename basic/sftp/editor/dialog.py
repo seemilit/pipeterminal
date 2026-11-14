@@ -5,8 +5,9 @@ from threading import Thread
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMessageBox, QVBoxLayout
+from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QVBoxLayout
 
+from common.qt.file_dialog import choose_save_file
 from common.i18n import tr
 from common.i18n.widgets import QAction, QDialog, QLabel, QPlainTextEdit, QPushButton
 from ..file_operations.controller import FileOperationController
@@ -107,7 +108,7 @@ class RemoteFileEditor(QDialog):
     def _save_local(self):
         if self._document is None or self.controller.busy or self._local_busy:
             return
-        filename, _filter = QFileDialog.getSaveFileName(self, tr("另存本地"), Path(self.path).name)
+        filename, _filter = choose_save_file(self, tr("另存本地"), Path(self.path).name)
         if filename:
             try:
                 data = backend.encode_document(self._document, self.editor.toPlainText())

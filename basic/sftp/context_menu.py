@@ -54,7 +54,7 @@ def build_remote_menu(parent, context, callback, *, enabled, can_paste, menu=Non
         add("下载选中项", "download", concrete and all(not entry.link for entry in entries))
         add("重命名", "rename", len(entries) == 1 and concrete)
         add("删除…", "delete", concrete)
-        menu.addSeparator()
+        return menu
     add("粘贴到当前目录", "paste", can_paste)
     add("新建文件…", "new_file")
     add("新建文件夹…", "new_directory")

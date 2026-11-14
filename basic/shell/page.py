@@ -3,11 +3,11 @@
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QMessageBox, QSplitter, QVBoxLayout, QWidget
 
 from basic.connection.api import ServerConfigStore
 from basic.terminal.api import NativeTerminalWidget
+from basic.terminal.palettes import DEFAULT_SHELL_THEME, SHELL_THEMES
 from common.i18n import tr
 from common.licensing.prompt import prompt_activation
 from common.i18n.widgets import QLabel, QLineEdit, QPushButton
@@ -53,6 +53,7 @@ class ShellPage(ModulePage):
         self._directory_cache_manager = None
         self._command_policy = None
         self._authorization = None
+        self._endpoint_privacy = None
         self.session = SSHSession(known_hosts, self)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -150,15 +151,7 @@ class ShellPage(ModulePage):
         terminal_font = self.terminal.font()
         terminal_font.setPointSize(10)
         self.terminal.setFont(terminal_font)
-        terminal_palette = self.terminal.palette()
-        for role, color in (
-            (QPalette.ColorRole.Base, "#111827"),
-            (QPalette.ColorRole.Text, "#e5e7eb"),
-            (QPalette.ColorRole.Highlight, "#374151"),
-            (QPalette.ColorRole.HighlightedText, "#ffffff"),
-        ):
-            terminal_palette.setColor(role, QColor(color))
-        self.terminal.setPalette(terminal_palette)
+        self.terminal.set_color_theme(SHELL_THEMES[DEFAULT_SHELL_THEME])
         self.search_bar = TerminalSearchBar(self.terminal, self)
         terminal_layout.addWidget(self.search_bar)
         terminal_layout.addWidget(self.terminal, 1)
@@ -209,6 +202,10 @@ class ShellPage(ModulePage):
 
     def bind_registry(self, registry) -> None:
         super().bind_registry(registry)
+        if self._endpoint_privacy is None:
+            self._endpoint_privacy = registry.get_service("window_appearance")
+            if self._endpoint_privacy is not None:
+                self._endpoint_privacy.endpoint_visibility_changed.connect(self._update_target)
         self._sftp_windows = registry.get_service("sftp")
         try:
             self.monitor_button.setEnabled(registry.get("monitor").page_factory is not None)
@@ -675,18 +672,26 @@ class ShellPage(ModulePage):
             self.transfer_tasks_button.setToolTip("")
         for control in (self.command_entry, self.send_button, self.interrupt_button):
             control.setEnabled(connected)
+        self._update_target()
+
+    def _update_target(self, *_args) -> None:
         configuration = (
             self._last_profile.configuration
-            if not idle and self._last_profile is not None else self._configuration
+            if self.session.state != "idle" and self._last_profile is not None else self._configuration
         )
-        self.target.setText(
-            f"{configuration.username}@{configuration.ip_address}:{configuration.port}"
-            if configuration is not None else ""
-        )
+        if configuration is None:
+            self.target.clear()
+            return
+        privacy = self._endpoint_privacy
+        host, port = configuration.ip_address, configuration.port
+        if privacy is not None:
+            host, port = privacy.display_host(host), privacy.display_port(port)
+        self.target.setText(f"{configuration.username}@{host}:{port}")
 
     def _ensure_transfer_dialog(self, initial_snapshot=None):
         if self._transfer_dialog is None and self._sftp_factory is not None and self.session.state == "connected":
             dialog = self._sftp_factory()
+            dialog.bind_endpoint_privacy(self._endpoint_privacy)
             from basic.sftp.clipboard import get_clipboard
 
             get_clipboard().bind_registry(self.registry)

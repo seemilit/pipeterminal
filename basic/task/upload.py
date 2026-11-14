@@ -7,7 +7,8 @@ from threading import Event
 from time import monotonic
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QButtonGroup, QCheckBox, QRadioButton, QComboBox, QListView, QStyledItemDelegate, QFileDialog, QFormLayout, QHBoxLayout, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QButtonGroup, QCheckBox, QRadioButton, QComboBox, QListView, QStyledItemDelegate, QFormLayout, QHBoxLayout, QMessageBox, QVBoxLayout, QWidget
+from common.qt.file_dialog import choose_directory, choose_file
 from common.i18n import tr
 from common.i18n.widgets import QDialog, QLabel, QLineEdit, QPushButton
 from .dialog_style import parameter_dialog_layout
@@ -264,9 +265,9 @@ class UploadParameterEditor(QWidget):
 
     def _choose(self):
         if self.kind in {"UPLOAD_FOLDER", "UPLOAD_JAR"}:
-            path = QFileDialog.getExistingDirectory(self, tr("选择目录"), self.source.text())
+            path = choose_directory(self, tr("选择目录"), self.source.text())
         else:
-            path, _ = QFileDialog.getOpenFileName(self, tr(STEP_LABELS[self.kind]), self.source.text(), "*.jar" if self.kind == "UPLOAD_JAR" else "*")
+            path, _ = choose_file(self, tr(STEP_LABELS[self.kind]), self.source.text(), "*.jar" if self.kind == "UPLOAD_JAR" else "*")
         if path:
             self.source.setText(path)
             self._changed()

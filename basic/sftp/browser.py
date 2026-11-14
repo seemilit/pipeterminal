@@ -6,10 +6,11 @@ from pathlib import Path
 from PySide6.QtCore import QDir, QEvent, Qt, Signal
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QFileDialog, QFileSystemModel, QHBoxLayout, QMenu,
+    QAbstractItemView, QApplication, QFileSystemModel, QHBoxLayout, QMenu,
     QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
+from common.qt.file_dialog import choose_directory
 from common.i18n import tr
 from common.i18n.errors import error_message
 from common.i18n.widgets import QAction, QLabel, QPushButton
@@ -99,7 +100,7 @@ class LocalBrowser(QWidget):
         self.path.shutdown()
 
     def _choose_directory(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, tr("选择目录"), self.directory)
+        directory = choose_directory(self, tr("选择目录"), self.directory)
         if directory:
             self.open_directory(directory)
 

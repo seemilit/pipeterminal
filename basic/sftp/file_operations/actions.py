@@ -10,8 +10,9 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtCore import QUrl
-from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMenu, QMessageBox
+from PySide6.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox, QTreeView
 
+from common.qt.file_dialog import choose_directory, choose_files
 from common.i18n import tr
 from common.licensing.prompt import prompt_activation
 from common.i18n.widgets import QCheckBox, QProgressDialog
@@ -101,26 +102,34 @@ class RemoteFileActions(QObject):
         connection = self._connection()
         if tree:
             item = view.itemAt(position)
-            if item is not None and item.data(0, Qt.ItemDataRole.UserRole) is not None:
-                view.setCurrentItem(item)
+            if item is not None:
                 path = item.data(0, Qt.ItemDataRole.UserRole)
+                if path is None:
+                    return
+                view.setCurrentItem(item)
                 entries = (RemoteEntry(posixpath.basename(path) or "/", path, True, False, 0, 0),)
                 directory = path
             else:
                 view.clearSelection()
                 entries, directory = (), self.workspace.remote.directory
         else:
-            if view is not self.workspace.remote.tree:
+            browser = self.workspace.remote
+            if view is not browser.tree:
                 return
-            item = view.itemAt(position)
+            in_blank_columns = isinstance(view, QTreeView) and view.header().logicalIndexAt(position.x()) < 0
+            item = None if in_blank_columns else view.itemAt(position)
             if item is None:
                 view.clearSelection()
-            elif not item.isSelected():
-                view.clearSelection()
-                view.setCurrentItem(item)
-                item.setSelected(True)
-            entries = tuple(item.data(0, Qt.ItemDataRole.UserRole) for item in view.selectedItems() if item.data(0, Qt.ItemDataRole.UserRole) is not None)
-            directory = self.workspace.remote.directory
+                entries = ()
+            else:
+                if item.data(0, Qt.ItemDataRole.UserRole) is None:
+                    return
+                if not item.isSelected():
+                    view.clearSelection()
+                    view.setCurrentItem(item)
+                    item.setSelected(True)
+                entries = tuple(item.data(0, Qt.ItemDataRole.UserRole) for item in view.selectedItems() if item.data(0, Qt.ItemDataRole.UserRole) is not None)
+            directory = browser.directory
         context = FileMenuContext(connection, directory, entries, tree)
         enabled = connection is not None and not self.controller.busy and (tree or self.workspace.remote.ready)
         menu = build_remote_menu(self.workspace, context, self.execute, enabled=enabled,
@@ -206,15 +215,15 @@ class RemoteFileActions(QObject):
             self._paste(context, first.path if action == "paste_into" else directory)
         elif action in {"upload", "upload_folder"}:
             if action == "upload_folder":
-                selected = QFileDialog.getExistingDirectory(self.workspace, tr("选择目录"), self.workspace.local.directory)
+                selected = choose_directory(self.workspace, tr("选择目录"), self.workspace.local.directory)
                 sources = [selected] if selected else []
             else:
-                sources, _filter = QFileDialog.getOpenFileNames(self.workspace, tr("上传"), self.workspace.local.directory)
+                sources, _filter = choose_files(self.workspace, tr("上传"), self.workspace.local.directory)
             self._upload_local(sources, directory, context.connection)
         elif action == "download":
             target = self.workspace.local.directory
             if choose_download_directory or self.workspace._embedded:
-                target = QFileDialog.getExistingDirectory(self.workspace, tr("选择目录"), target)
+                target = choose_directory(self.workspace, tr("选择目录"), target)
             if target and self.controller.current(context.connection):
                 self._queue_snapshot_transfer("download", paths, target, context.connection)
         elif action in {"new_file", "new_directory", "rename"}:

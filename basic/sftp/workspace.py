@@ -6,9 +6,10 @@ from uuid import uuid4
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QFileDialog, QHBoxLayout, QMessageBox, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
+    QAbstractItemView, QHBoxLayout, QMessageBox, QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
 
+from common.qt.file_dialog import choose_directory, choose_files
 from common.i18n import tr
 from common.i18n.widgets import (
     QDialog, QLabel, QPushButton, QTabWidget,
@@ -315,7 +316,7 @@ class FileTransferWorkspace(QWidget):
 
     def _upload(self) -> None:
         if self._embedded:
-            sources, _filter = QFileDialog.getOpenFileNames(self, tr("上传"), self.local.directory)
+            sources, _filter = choose_files(self, tr("上传"), self.local.directory)
             if sources:
                 self.local.open_directory(str(Path(sources[0]).parent))
         else:
@@ -323,7 +324,7 @@ class FileTransferWorkspace(QWidget):
         self._queue_transfer("upload", sources, self.remote.directory)
 
     def _upload_folder(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, tr("选择目录"), self.local.directory)
+        directory = choose_directory(self, tr("选择目录"), self.local.directory)
         if directory:
             self.local.open_directory(str(Path(directory).parent))
             self._queue_transfer("upload", [directory], self.remote.directory)
@@ -331,7 +332,7 @@ class FileTransferWorkspace(QWidget):
     def _download(self) -> None:
         sources = self.remote.selected_paths()
         if self._embedded:
-            directory = QFileDialog.getExistingDirectory(self, tr("选择目录"), self.local.directory)
+            directory = choose_directory(self, tr("选择目录"), self.local.directory)
             if not directory:
                 return
             self.local.open_directory(directory)

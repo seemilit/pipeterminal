@@ -4,7 +4,6 @@ from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QHBoxLayout,
-    QProgressBar,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
@@ -67,12 +66,6 @@ class ApplicationShell(QWidget):
         self.status_label = QLabel(tr("就绪"))
         self.status_label.setObjectName("applicationStatusText")
         status_layout.addWidget(self.status_label, 1)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFixedWidth(150)
-        self.progress_bar.setObjectName("applicationProgress")
-        status_layout.addWidget(self.progress_bar)
         layout.addWidget(status)
         self.reset_layout()
 

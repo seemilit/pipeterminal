@@ -1,5 +1,7 @@
 """Background execution of independent workflow actions."""
 
+from contextlib import nullcontext
+from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic
 
@@ -20,6 +22,24 @@ from .graph import ensure_graph, execution_plan
 from .health import execute_health
 from .wait import execute_wait
 from .upload import STEP_LABELS as UPLOAD_LABELS, UploadEngine
+
+
+def _project_paths(step):
+    kind, properties = step["type"], step["properties"]
+    if "local_jar_build" in step:
+        project, _filters = step["local_jar_build"]
+        paths = [Path(project)]
+    elif kind == "MERGE_BRANCH":
+        paths = [Path(properties[field]) for field in ("SOURCE_PROJECT_PATH", "TARGET_PROJECT_PATH")]
+    elif kind in {"COMMIT_PUSH", "PULL", "MAVEN_BUILD"}:
+        paths = [Path(properties["PROJECT_PATH"])]
+    else:
+        return set()
+    directories = [path.expanduser().resolve() for path in paths]
+    return {
+        next((parent for parent in (path, *path.parents) if (parent / ".git").exists()), path)
+        for path in directories
+    }
 
 
 class TaskRunner(QObject):
@@ -74,11 +94,25 @@ class TaskRunner(QObject):
             def execute(index):
                 self._execute_step(index, steps[index], artifacts, artifacts_lock, scheduler is not None)
 
-            if scheduler is not None and check_connections:
-                scheduler.run(order, predecessors, steps, execute, self.stop, self.services)
-            else:
-                for index in order:
-                    execute(index)
+            projects = sorted({path for index in order for path in _project_paths(steps[index])})
+            project_lock = (
+                self.services.lock_projects(
+                    projects, self.stop,
+                    lambda: self.message.emit(tr("项目目录正在被另一批次使用，等待释放。")),
+                )
+                if self.services else nullcontext()
+            )
+            try:
+                connections = self.services.worker_connections(self) if self.services else nullcontext()
+                with project_lock, connections:
+                    if scheduler is not None and check_connections:
+                        scheduler.run(order, predecessors, steps, execute, self.stop, self.services)
+                    else:
+                        for index in order:
+                            execute(index)
+            finally:
+                if self.services is not None:
+                    self.services.close_worker_connections(self)
             if self.stop.is_set():
                 raise RuntimeError(tr("执行已停止"))
         except Exception as exc:

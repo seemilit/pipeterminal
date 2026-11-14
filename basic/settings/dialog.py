@@ -26,13 +26,12 @@ class SettingsDialog(QDialog):
         self.authorization_group = group
         self.authorization_group.hide()
         content = QVBoxLayout(group)
-        self.access = QLabel()
         self.state = QLabel()
         self.development = QLabel()
         self.holder = QLabel()
         self.expiration = QLabel()
         self.restart = QLabel(tr("授权变化将在重启后生效"))
-        for label in (self.access, self.state, self.development, self.holder, self.expiration, self.restart):
+        for label in (self.state, self.development, self.holder, self.expiration, self.restart):
             label.setWordWrap(True)
             content.addWidget(label)
         content.addWidget(QLabel(tr("授权码")))
@@ -50,10 +49,23 @@ class SettingsDialog(QDialog):
         actions.addWidget(self.remove_button)
         content.addLayout(actions)
         layout.addWidget(group)
+        self.help_group = QGroupBox(tr("帮助"))
+        help_layout = QHBoxLayout(self.help_group)
+        self.about_button = QPushButton(tr("关于 PipeTerminal"))
+        help_layout.addWidget(self.about_button)
+        help_layout.addStretch(1)
+        layout.addWidget(self.help_group)
+        self.help_group.hide()
         layout.addStretch(1)
         self._refresh()
 
     def bind_registry(self, registry) -> None:
+        show_about = registry.get_service("show_about")
+        if show_about is not None:
+            self.about_button.clicked.connect(lambda: show_about(self))
+        appearance = registry.get_service("window_appearance")
+        if appearance is not None:
+            appearance.attach_settings(self, has_help=show_about is not None)
         self._authorization = registry.get_service("authorization") if registry.has_paid_features else None
         self.authorization_group.setVisible(self._authorization is not None)
         if self._authorization is not None:
@@ -66,13 +78,11 @@ class SettingsDialog(QDialog):
         self.remove_button.setEnabled(manager is not None)
         if manager is None:
             self.state.setText(tr("授权不可用"))
-            for label in (self.access, self.development, self.holder, self.expiration, self.restart):
+            for label in (self.development, self.holder, self.expiration, self.restart):
                 label.hide()
             return
-        self.access.setText(tr("当前权限：{0}", tr("付费版" if manager.active_status == "valid" else "免费版")))
         status = manager.active_status if manager.development is not None and not manager.restart_required else manager.saved_status
         self.state.setText(tr("授权状态：{0}", tr(_STATUS_TEXT[status])))
-        self.access.show()
         self.development.setVisible(manager.development is not None)
         if manager.development is not None:
             mode = {"all": "全部功能", "free": "模拟免费", "licensed": "模拟有效", "expired": "模拟过期"}

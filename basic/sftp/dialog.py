@@ -30,6 +30,9 @@ class FileTransferDialog(QDialog):
         self._embedded = False
         self._window_mode = False
         self._panel = None
+        self._endpoint_privacy = None
+        self._server_name = ""
+        self._server_address = ""
         self._display_preferences = FileViewPreferences() if allow_mode_switch else None
         self._maximized_before_fullscreen = False
         layout = QVBoxLayout(self)
@@ -45,8 +48,16 @@ class FileTransferDialog(QDialog):
         self.finished.connect(lambda _result: self.view_closed.emit())
 
     def create_popup(self, parent=None):
-        return FileTransferDialog(parent, transfer_controller=self.workspace.transfer_controller,
-                                  file_operations=self.workspace.file_operations, allow_mode_switch=True)
+        popup = FileTransferDialog(parent, transfer_controller=self.workspace.transfer_controller,
+                                   file_operations=self.workspace.file_operations, allow_mode_switch=True)
+        popup.bind_endpoint_privacy(self._endpoint_privacy)
+        return popup
+
+    def bind_endpoint_privacy(self, privacy) -> None:
+        if privacy is not None and self._endpoint_privacy is None:
+            self._endpoint_privacy = privacy
+            privacy.endpoint_visibility_changed.connect(self._refresh_server_target)
+            self._refresh_server_target()
 
     def _close_requested(self):
         if self._window_mode and self._panel is not None:
@@ -131,7 +142,14 @@ class FileTransferDialog(QDialog):
         self._update_server_display(name, server_address)
 
     def _update_server_display(self, name: str, server_address: str) -> None:
+        self._server_name, self._server_address = name, server_address
         self.setWindowTitle(f"{name} SFTP" if name else tr("文件传输"))
+        self._refresh_server_target()
+
+    def _refresh_server_target(self, *_args) -> None:
+        name, server_address = self._server_name, self._server_address
+        if self._endpoint_privacy is not None:
+            server_address = self._endpoint_privacy.display_host(server_address)
         self.workspace.target.setText(tr("服务器：{0}", f"{name} ({server_address})" if server_address else name))
 
     def _attach_workspace(self) -> None:

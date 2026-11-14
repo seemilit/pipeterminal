@@ -22,6 +22,7 @@ _WM_NCLBUTTONDBLCLK = 0x00A3
 _HTSYSMENU = 3
 _WM_SYSCOMMAND = 0x0112
 _SC_DEFAULT = 0xF160
+_REORDERABLE_DIRECTORIES = {"task", "connection", "log"}
 
 
 class MainWindow(QMainWindow):
@@ -30,6 +31,7 @@ class MainWindow(QMainWindow):
         self.registry = registry
         self._module_pages: dict[str, QWidget] = {}
         registry.register_service("open_shell_panel", self._open_workflow_shell)
+        registry.register_service("show_about", self._show_about)
         self._active_page: ModulePage | None = None
         self._current_module_id: str | None = None
         self.setWindowTitle("PipeTerminal")
@@ -41,6 +43,7 @@ class MainWindow(QMainWindow):
         self.shell.sidebar.module_selected.connect(self._open_module)
         self.shell.sidebar.directory_panel.item_selected.connect(self._select_directory_item)
         self.shell.sidebar.directory_panel.item_activated.connect(self._activate_directory_item)
+        self.shell.sidebar.directory_panel.order_changed.connect(self._save_directory_order)
         self.shell.bottom_panel.panel_activated.connect(self._activate_workspace_panel)
 
         self.file_actions: dict[str, QAction] = {}
@@ -92,14 +95,19 @@ class MainWindow(QMainWindow):
         self.shell.toolbar.add_action(self.bottom_panel_action, right=True, show_icon=False)
         run_button = self.shell.toolbar.add_action(self.file_actions["execute"], right=True, show_icon=False)
         run_button.setProperty("primary", True)
+        self._stop_task_action = QAction(tr("停止"), self)
+        self._stop_task_action.setVisible(False)
+        self._stop_task_action.triggered.connect(self._stop_running_task)
+        self._stop_task_button = self.shell.toolbar.add_action(self._stop_task_action, right=True, show_icon=False)
+        self._stop_task_button.hide()
         self.shell.editor_toolbar.add_action(self.file_actions["history"], right=True, height=30, show_icon=False)
         self.shell.toolbar.addAction(self.sidebar_action)
         self.shell.toolbar.addAction(self.reset_layout_action)
         help_button = self.shell.toolbar.add_action(QAction(tr("帮助"), self), right=True, show_icon=False)
         help_menu = QMenu(help_button)
-        self._help_menu = help_menu
+        self.help_button = help_button
         about_action = QAction(tr("关于 PipeTerminal"), help_menu)
-        about_action.triggered.connect(self._show_about)
+        about_action.triggered.connect(lambda: self._show_about())
         help_menu.addAction(about_action)
         help_button.setMenu(help_menu)
         help_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -108,12 +116,12 @@ class MainWindow(QMainWindow):
         if self._window_state is not None:
             self._window_state.restore_geometry()
 
-    def _show_about(self) -> None:
+    def _show_about(self, parent: QWidget | None = None) -> None:
         authorization = self.registry.authorization
         paid = self.registry.has_paid_features and authorization is not None and authorization.active_status == "valid"
         edition = tr("Plus 版" if paid else "免费版")
         version = QApplication.applicationVersion()
-        dialog = QMessageBox(self)
+        dialog = QMessageBox(parent if parent is not None else self)
         dialog.setWindowTitle(tr("关于 PipeTerminal"))
         dialog.setTextFormat(Qt.TextFormat.PlainText)
         dialog.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
@@ -165,6 +173,9 @@ class MainWindow(QMainWindow):
             if not isinstance(page, QDialog):
                 if isinstance(page, ModulePage):
                     page.directory_changed.connect(lambda target=page: self._refresh_directory(target))
+                    page.directory_item_renamed.connect(
+                        lambda previous, name, module=module_id: self._rename_directory_item(module, previous, name)
+                    )
                     page.actions_changed.connect(lambda target=page: self._update_file_actions(target))
                     page.status_changed.connect(
                         lambda message, target=page: self._set_page_status(target, message)
@@ -259,16 +270,38 @@ class MainWindow(QMainWindow):
         if page is not None and page is not self._active_page:
             return
         directory = self.shell.sidebar.directory_panel
-        if self._current_module_id is not None:
-            directory.set_heading(tr(self.registry.get(self._current_module_id).name))
+        module_id = self._current_module_id
+        if module_id is not None:
+            directory.set_heading(tr(self.registry.get(module_id).name))
+        reorderable = self._active_page is not None and module_id in _REORDERABLE_DIRECTORIES
+        directory.set_reorder_enabled(reorderable)
         blocker = QSignalBlocker(directory.item_list)
         items = []
         if self._active_page is not None:
             items = self._active_page.directory_items()
+        if reorderable and self._window_state is not None:
+            items = self._window_state.order_directory_items(module_id, items)
         directory.set_items(items)
         if self._active_page is not None:
             directory.select_item(self._active_page.current_item_id())
         del blocker
+
+    def _save_directory_order(self, order: list[str]) -> None:
+        module_id = self._current_module_id
+        if self._window_state is None or module_id not in _REORDERABLE_DIRECTORIES:
+            return
+        try:
+            self._window_state.save_directory_order(module_id, order)
+        except (OSError, ValueError) as exc:
+            self._refresh_directory()
+            QMessageBox.warning(self, tr("保存失败"), error_message(exc))
+
+    def _rename_directory_item(self, module_id: str, previous_id: str, new_id: str) -> None:
+        if self._window_state is not None:
+            try:
+                self._window_state.rename_directory_item(module_id, previous_id, new_id)
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, tr("保存失败"), error_message(exc))
 
     def _select_directory_item(self, item_id: str) -> None:
         if self._active_page is not None:
@@ -282,6 +315,11 @@ class MainWindow(QMainWindow):
             self._active_page.activate_item(item_id)
 
     def _update_file_actions(self, page: ModulePage | None = None) -> None:
+        task_page = self._module_pages.get("task")
+        can_stop = isinstance(task_page, ModulePage) and task_page.is_action_enabled("stop")
+        self._stop_task_action.setVisible(can_stop)
+        self._stop_task_action.setEnabled(can_stop)
+        self._stop_task_button.setVisible(can_stop)
         if page is not None and page is not self._active_page:
             return
         for action_id, action in self.file_actions.items():
@@ -293,6 +331,11 @@ class MainWindow(QMainWindow):
                 not self.shell.panel_focus_mode
                 and self._active_page is not None and self._active_page.is_action_enabled(action_id)
             )
+
+    def _stop_running_task(self) -> None:
+        task_page = self._module_pages.get("task")
+        if isinstance(task_page, ModulePage) and task_page.is_action_enabled("stop"):
+            task_page.file_actions["stop"]()
 
     def _run_file_action(self, action_id: str) -> None:
         page = self._active_page

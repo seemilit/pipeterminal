@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPalette
 
+from .palettes import DARK_ANSI, LIGHT_ANSI, ShellPalette
+
 
 @dataclass(frozen=True)
 class CellMetrics:
@@ -15,25 +17,19 @@ class CellMetrics:
 
 
 class Renderer:
-    def __init__(self, font: QFont, palette: QPalette) -> None:
+    def __init__(self, font: QFont, palette: QPalette, theme: ShellPalette | None = None) -> None:
         self.font = font
         metrics = QFontMetricsF(font)
         self.metrics = CellMetrics(metrics.horizontalAdvance("M"), metrics.height(), metrics.ascent())
-        self.foreground = palette.color(QPalette.ColorRole.Text)
-        self.background = palette.color(QPalette.ColorRole.Base)
-        self.selection = palette.color(QPalette.ColorRole.Highlight)
-        self.selection_text = palette.color(QPalette.ColorRole.HighlightedText)
+        self.foreground = QColor(theme.foreground) if theme else palette.color(QPalette.ColorRole.Text)
+        self.background = QColor(theme.background) if theme else palette.color(QPalette.ColorRole.Base)
+        self.selection = QColor(theme.selection) if theme else palette.color(QPalette.ColorRole.Highlight)
+        self.selection_text = QColor(theme.selection_text) if theme else palette.color(QPalette.ColorRole.HighlightedText)
         self.search_background = QColor("#facc15")
         self.search_current = QColor("#fb923c")
         self.search_text = QColor("#111827")
-        dark = self.background.lightness() < 128
-        colors = (
-            ("#18181b", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
-             "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#ffffff")
-            if dark else
-            ("#18181b", "#b91c1c", "#15803d", "#a16207", "#1d4ed8", "#a21caf", "#0e7490", "#4b5563",
-             "#71717a", "#dc2626", "#16a34a", "#ca8a04", "#2563eb", "#c026d3", "#0891b2", "#27272a")
-        )
+        default_colors = DARK_ANSI if self.background.lightness() < 128 else LIGHT_ANSI
+        colors = theme.ansi if theme else default_colors
         self.colors = [QColor(color) for color in colors]
         levels = (0, 95, 135, 175, 215, 255)
         self.colors.extend(QColor(r, g, b) for r in levels for g in levels for b in levels)

@@ -25,7 +25,34 @@ class WindowStateController(QObject):
             if isinstance(key, str) and isinstance(value, str)
         } if isinstance(selected, dict) else {}
         self._restored_pages: set[str] = set()
+        orders = self._state.get("directory_orders")
+        self._directory_orders: dict[str, list[str]] = {
+            module_id: list(dict.fromkeys(item_id for item_id in order if isinstance(item_id, str)))
+            for module_id, order in orders.items() if isinstance(order, list)
+        } if isinstance(orders, dict) else {}
         window.shell.main_splitter.splitterMoved.connect(self.remember_layout)
+
+    def order_directory_items(
+        self, module_id: str, items: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        order = self._directory_orders.get(module_id)
+        if not order:
+            return items
+        remaining = dict(items)
+        ordered = [(item_id, remaining.pop(item_id)) for item_id in order if item_id in remaining]
+        ordered.extend(remaining.items())
+        return ordered
+
+    def save_directory_order(self, module_id: str, order: list[str]) -> None:
+        orders = {**self._directory_orders, module_id: order}
+        self.store.update_section("window", {"directory_orders": orders})
+        self._directory_orders = orders
+
+    def rename_directory_item(self, module_id: str, previous_id: str, new_id: str) -> None:
+        order = self._directory_orders.get(module_id, [])
+        if previous_id in order:
+            updated = [new_id if item_id == previous_id else item_id for item_id in order if item_id != new_id]
+            self.save_directory_order(module_id, updated)
 
     def _read_sizes(self, key: str, default: list[int]) -> list[int]:
         value = self._state.get(key)

@@ -2,7 +2,7 @@
 
 import math
 
-from PySide6.QtCore import QEvent, QPointF, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, QRect, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QCursor, QFont, QPainter
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QFrame, QMenu
 
@@ -11,6 +11,7 @@ from common.i18n import tr
 from .engine import TerminalEngine
 from .engine.api import TerminalEngineProtocol
 from .input import encode_key
+from .palettes import ShellPalette
 from .renderer import Renderer
 from .search import TerminalSearch
 from .paths import reference_at
@@ -39,6 +40,7 @@ class NativeTerminalWidget(QAbstractScrollArea):
         self._path_navigation_enabled = False
         self._hovered_path = None
         self._hovered_file = None
+        self._color_theme: ShellPalette | None = None
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
@@ -66,6 +68,18 @@ class NativeTerminalWidget(QAbstractScrollArea):
         self._selection_timer.timeout.connect(self._autoscroll_selection)
         self._drag_position = QPointF()
         QApplication.instance().installEventFilter(self)
+
+    @Slot(object)
+    def set_color_theme(self, theme: ShellPalette) -> None:
+        if self._color_theme == theme:
+            return
+        self._color_theme = theme
+        self.renderer = Renderer(self.font(), self.palette(), theme)
+        self.verticalScrollBar().setStyleSheet(
+            f"QScrollBar {{ background: {theme.background}; }}"
+            f"QScrollBar::handle {{ background: {theme.scroll_thumb}; }}"
+        )
+        self.viewport().update()
 
     def enable_path_navigation(self, enabled: bool) -> None:
         self._path_navigation_enabled = enabled
@@ -393,7 +407,7 @@ class NativeTerminalWidget(QAbstractScrollArea):
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
         if event.type() in {QEvent.Type.PaletteChange, QEvent.Type.FontChange} and hasattr(self, "renderer"):
-            self.renderer = Renderer(self.font(), self.palette())
+            self.renderer = Renderer(self.font(), self.palette(), self._color_theme)
             self.engine.screen.invalidate()
             self.fit()
             self.viewport().update()

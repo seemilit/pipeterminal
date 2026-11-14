@@ -1,8 +1,9 @@
 """Inline editor for the selected workflow step."""
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QScrollArea, QVBoxLayout
+from PySide6.QtWidgets import QComboBox, QFormLayout, QFrame, QHBoxLayout, QScrollArea, QVBoxLayout
 
+from common.qt.file_dialog import choose_directory
 from common.i18n import tr
 from common.i18n.widgets import QLabel, QLineEdit, QPushButton
 
@@ -157,7 +158,7 @@ class TaskParameterEditor(QFrame):
         return values
 
     def _choose(self, field):
-        directory = QFileDialog.getExistingDirectory(self, tr("选择目录"), field.text())
+        directory = choose_directory(self, tr("选择目录"), field.text())
         if directory:
             field.setText(directory)
             self._changed()
