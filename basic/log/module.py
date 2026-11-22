@@ -4,12 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
-
 from common.modules.descriptor import ModuleDescriptor
-
-if TYPE_CHECKING:
-    from PySide6.QtWidgets import QWidget
 
 
 def create_service():
@@ -23,12 +18,6 @@ def create_service():
     return LogService(LogStore(root / "conf" / ".logs"))
 
 
-def create_page() -> QWidget:
-    from .page import LogPage
-
-    return LogPage()
-
-
 def register_translations() -> None:
     from common.i18n import register_messages
     from .translations import MESSAGES
@@ -40,6 +29,6 @@ def register_translations() -> None:
 def get_module() -> ModuleDescriptor:
     return ModuleDescriptor(
         id="log", name="日志", icon="log", order=500,
-        page_factory=create_page, service_factory=create_service,
+        sidebar=False, service_factory=create_service,
         on_startup=register_translations,
     )

@@ -20,7 +20,7 @@ class LogService(QObject):
         self.store = store
         self._writers: list[LogWriter] = []
         self._producers: list[Callable[[], None]] = []
-        self._daily_writers: dict[tuple[str, str], LogWriter] = {}
+        self._daily_writers: dict[tuple[str, str | None, str], LogWriter] = {}
         self._viewers: dict[str, object] = {}
         QApplication.instance().aboutToQuit.connect(self.shutdown)
 
@@ -32,9 +32,12 @@ class LogService(QObject):
         if stop in self._producers:
             self._producers.remove(stop)
 
-    def open_session(self, category: str, name: str) -> LogWriter:
+    def open_session(self, category: str, name: str, *, resource: str | None = None) -> LogWriter:
         self._writers = [writer for writer in self._writers if not writer.closed.is_set()]
-        writer = LogWriter(self.store.new_path(category, name), error_callback=self.write_failed.emit)
+        if category == "task":
+            writer = LogWriter.for_task(self.store, name, error_callback=self.write_failed.emit)
+        else:
+            writer = LogWriter(self.store.new_path(category, name, resource=resource), error_callback=self.write_failed.emit)
         self._writers.append(writer)
         return writer
 
@@ -42,14 +45,14 @@ class LogService(QObject):
         path = self.store.path_for(identifier)
         return any(writer.path == path and not writer.closed.is_set() for writer in self._writers)
 
-    def record_event(self, category: str, kind: str, message: str) -> LogWriter:
-        key = category, datetime.now().strftime("%Y%m%d")
+    def record_event(self, category: str, kind: str, message: str, *, resource: str | None = None) -> LogWriter:
+        key = category, resource, datetime.now().strftime("%Y%m%d")
         for previous in list(self._daily_writers):
-            if previous[0] == category and previous != key:
+            if previous[:2] == key[:2] and previous != key:
                 self._daily_writers.pop(previous).close()
         writer = self._daily_writers.get(key)
         if writer is None or writer.closed.is_set():
-            writer = self.open_session(category, "operations")
+            writer = self.open_session(category, resource or "operations", resource=resource)
             self._daily_writers[key] = writer
         writer.event(kind, message)
         return writer

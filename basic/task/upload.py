@@ -7,10 +7,10 @@ from threading import Event
 from time import monotonic
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QButtonGroup, QCheckBox, QRadioButton, QComboBox, QListView, QStyledItemDelegate, QFormLayout, QHBoxLayout, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QButtonGroup, QListView, QStyledItemDelegate, QFormLayout, QHBoxLayout, QMessageBox, QVBoxLayout, QWidget
 from common.qt.file_dialog import choose_directory, choose_file
 from common.i18n import tr
-from common.i18n.widgets import QDialog, QLabel, QLineEdit, QPushButton
+from common.i18n.widgets import QCheckBox, QComboBox, QRadioButton, QDialog, QLabel, QLineEdit, QPushButton
 from .dialog_style import parameter_dialog_layout
 
 STEP_LABELS = {"UPLOAD_JAR": "JAR 包", "UPLOAD_FILE": "文件", "UPLOAD_FOLDER": "文件夹"}
@@ -77,7 +77,7 @@ class UploadEngine:
                     raise ValueError(tr("目标不是目录：{0}", current))
             return directory
 
-    def execute(self, kind, properties, *, artifacts=None):
+    def execute(self, kind, properties, *, artifacts=None, report_progress=None):
         from basic.shell.context import SSHConnectionContext
         from basic.sftp.backend import transfer
         from basic.sftp.model import TransferTask, TransferCancelled
@@ -101,6 +101,8 @@ class UploadEngine:
             nonlocal last_report
             now = monotonic()
             if now - last_report >= 1:
+                if report_progress is not None and total:
+                    report_progress(min(100, max(0, current * 100 // total)))
                 self.log(tr("上传进度：{0}% · {1}", int(current * 100 / total) if total else 0, name))
                 last_report = now
 
@@ -178,14 +180,14 @@ class UploadParameterEditor(QWidget):
         self.directory = QLineEdit()
         self.directory.textEdited.connect(self._changed)
         form.addRow(QLabel(tr("服务器目录")), self.directory)
-        self.create_directory = QCheckBox(str(tr("目录不存在时创建")))
+        self.create_directory = QCheckBox(tr("目录不存在时创建"))
         self.create_directory.toggled.connect(self._changed)
         form.addRow(self.create_directory)
         self.policy = QButtonGroup(self)
         self.policy_buttons = {}
         policies = QHBoxLayout()
         for index, (value, label) in enumerate(POLICIES.items()):
-            button = QRadioButton(str(tr(label)))
+            button = QRadioButton(tr(label))
             self.policy.addButton(button, index)
             self.policy_buttons[value] = button
             policies.addWidget(button)
@@ -217,7 +219,7 @@ class UploadParameterEditor(QWidget):
             source = values["UPLOAD_SOURCE"]
             matches = [name for name, project in self.artifact_options if project == source] if source else []
             selected = matches[-1] if matches else self.artifact_options[-1][0] if self.artifact_options and not source else ""
-        self.artifact.addItem(str(tr("请选择产物组")), "")
+        self.artifact.addItem(tr("请选择产物组"), "")
         for name, _project in self.artifact_options:
             self.artifact.addItem(name, name)
         if selected and self.artifact.findData(selected) < 0:
@@ -230,7 +232,7 @@ class UploadParameterEditor(QWidget):
         self.directory.setText(values["UPLOAD_DIRECTORY"])
         self.create_directory.setChecked(values["UPLOAD_CREATE_DIRECTORY"] == "yes")
         self.server.clear()
-        self.server.addItem(str(tr("请选择服务器")), "")
+        self.server.addItem(tr("请选择服务器"), "")
         names = self.services.store.list_names() if self.services else []
         if values["SERVER"] and values["SERVER"] not in names:
             names.append(values["SERVER"])

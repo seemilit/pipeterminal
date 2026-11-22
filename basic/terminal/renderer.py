@@ -49,8 +49,9 @@ class Renderer:
         metrics = self.metrics
         return QRectF(metrics.padding + col * metrics.width, metrics.padding + row * metrics.height, metrics.width * width, metrics.height)
 
-    def paint_line(self, painter, line, row: int, selection, search=()) -> None:
-        painter.fillRect(self.cell_rect(row, 0, len(line.cells)), self.background)
+    def paint_line(self, painter, line, row: int, selection, search=(), *, transparent_background=False) -> None:
+        if not transparent_background:
+            painter.fillRect(self.cell_rect(row, 0, len(line.cells)), self.background)
         matches = {}
         for start, end, current in search:
             for col in range(max(0, start), min(len(line.cells), end)):
@@ -64,7 +65,8 @@ class Renderer:
                 background = self.search_current if matches[col] == 2 else self.search_background
             if self._selected(line.id, col - 1 if cell.continuation else col, selection):
                 background = self.selection
-            painter.fillRect(self.cell_rect(row, col), background)
+            if not transparent_background or cell.background is not None or cell.inverse or col in matches or self._selected(line.id, col - 1 if cell.continuation else col, selection):
+                painter.fillRect(self.cell_rect(row, col), background)
         for col, cell in enumerate(line.cells):
             if cell.continuation or cell.text == " ":
                 continue

@@ -44,6 +44,8 @@ def _project_paths(step):
 
 class TaskRunner(QObject):
     message = Signal(object)
+    step_message = Signal(int, object)
+    upload_progress = Signal(int, int)
     finished = Signal(bool, object)
     step_state = Signal(int, str)
     conflict_requested = Signal(object)
@@ -125,10 +127,10 @@ class TaskRunner(QObject):
             raise RuntimeError(tr("执行已停止"))
         self.step_state.emit(index, "running")
         kind, properties = step["type"], step["properties"]
-        self.message.emit(tr("执行第 {0} 步：{1}", index + 1, tr(STEP_LABELS[kind])))
+        self.step_message.emit(index, tr("执行第 {0} 步：{1}", index + 1, tr(STEP_LABELS[kind])))
 
         def log(message):
-            self.message.emit(tr("第 {0} 步：{1}", index + 1, message) if parallel else message)
+            self.step_message.emit(index, tr("第 {0} 步：{1}", index + 1, message) if parallel else message)
 
         def resolve(request):
             return self._resolve(index, request)
@@ -142,7 +144,10 @@ class TaskRunner(QObject):
                 if kind == "UPLOAD_JAR" and "local_jar_build" in step:
                     project, filters = step["local_jar_build"]
                     available[properties["ARTIFACT_NAME"]] = detect_jars(project.resolve(), self.stop, filters)
-                UploadEngine(self.services, log, self.stop).execute(kind, properties, artifacts=available)
+                UploadEngine(self.services, log, self.stop).execute(
+                    kind, properties, artifacts=available,
+                    report_progress=lambda percent: self.upload_progress.emit(index, percent),
+                )
             elif kind == "MAVEN_BUILD":
                 name = properties["ARTIFACT_NAME"].strip()
                 built = MavenBuild(self.services, log, self.stop).execute(properties)
@@ -159,7 +164,8 @@ class TaskRunner(QObject):
                 GitMergePush(log, resolve).execute(properties)
             else:
                 GitWorkflow(log, resolve).execute_action(kind, properties)
-        except Exception:
+        except Exception as error:
+            log(error_message(error))
             self.step_state.emit(index, "failed")
             raise
         self.step_state.emit(index, "success")

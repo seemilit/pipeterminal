@@ -22,6 +22,9 @@ from common.i18n.errors import error_message
 
 
 class ShellPage(ModulePage):
+    provides_focus_status = True
+    workspace_icon = "terminal"
+    workspace_numbered = True
     connection_requested = Signal(str)
     transfer_views_closed = Signal()
 
@@ -36,7 +39,9 @@ class ShellPage(ModulePage):
         self._log_service = None
         self._log_writer = None
         self._last_log_writer = None
-        self._terminal_mode = False
+        self._workspace_focused = False
+        self._focus_monitor_visible = False
+        self._focus_file_sizes = None
         self._monitor = None
         self._monitor_width = 275
         self._preferences = ShellPreferences(known_hosts.with_name("settings.json"))
@@ -77,7 +82,7 @@ class ShellPage(ModulePage):
         layout.addWidget(self.connection_controls)
         header = QWidget()
         header.setObjectName("shellHeader")
-        header_layout = QHBoxLayout(header)
+        header_layout = self._header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(6, 5, 6, 5)
         header_layout.setSpacing(8)
         self.target = QLabel()
@@ -94,11 +99,8 @@ class ShellPage(ModulePage):
         self.status = QLabel(tr("未连接"))
         status_layout.addWidget(self.status)
         header_layout.addWidget(self.connection_status)
-        self.mode_button = QPushButton(tr("终端模式"))
-        self.mode_button.clicked.connect(self._toggle_terminal_mode)
         self.monitor_button = QPushButton(tr("隐藏状态栏") if self._monitor_visible else tr("显示状态栏"))
         self.monitor_button.clicked.connect(self._toggle_monitor_visibility)
-        self.monitor_button.hide()
         header_layout.addWidget(self.monitor_button)
         header_layout.addStretch(1)
         self.disconnect_button = QPushButton(tr("断开"))
@@ -117,7 +119,7 @@ class ShellPage(ModulePage):
         self.close_button = QPushButton(tr("关闭标签"))
         self.close_button.clicked.connect(self._request_close)
         for button in (
-            self.mode_button, self.disconnect_button, self.file_transfer_button,
+            self.disconnect_button, self.file_transfer_button,
             self.transfer_tasks_button, self.search_button, self.log_button, self.close_button,
         ):
             header_layout.addWidget(button)
@@ -155,7 +157,7 @@ class ShellPage(ModulePage):
         self.search_bar = TerminalSearchBar(self.terminal, self)
         terminal_layout.addWidget(self.search_bar)
         terminal_layout.addWidget(self.terminal, 1)
-        command_bar = QWidget()
+        command_bar = self.command_bar = QWidget()
         command_bar.setObjectName("shellCommandBar")
         command_layout = QHBoxLayout(command_bar)
         self.command_layout = command_layout
@@ -183,6 +185,13 @@ class ShellPage(ModulePage):
         self.file_panel_button.clicked.connect(self._toggle_file_panel)
         command_layout.addWidget(self.file_panel_button)
         terminal_layout.addWidget(command_bar)
+        self._focus_status_bar = QWidget()
+        self._focus_status_bar.setObjectName("applicationStatusBar")
+        self._focus_status_layout = QHBoxLayout(self._focus_status_bar)
+        self._focus_status_layout.setContentsMargins(8, 3, 8, 3)
+        self._focus_status_layout.addStretch(1)
+        self._focus_status_bar.hide()
+        layout.addWidget(self._focus_status_bar)
         self.servers.currentIndexChanged.connect(self._load_selected_server)
         self.connect_button.clicked.connect(self._request_connect)
         self.disconnect_button.clicked.connect(self._handle_connection_action)
@@ -206,6 +215,9 @@ class ShellPage(ModulePage):
             self._endpoint_privacy = registry.get_service("window_appearance")
             if self._endpoint_privacy is not None:
                 self._endpoint_privacy.endpoint_visibility_changed.connect(self._update_target)
+                decorate = getattr(self._endpoint_privacy, "decorate_terminal", None)
+                if decorate is not None:
+                    decorate(self.terminal)
         self._sftp_windows = registry.get_service("sftp")
         try:
             self.monitor_button.setEnabled(registry.get("monitor").page_factory is not None)
@@ -329,12 +341,12 @@ class ShellPage(ModulePage):
             self._bound_name, self._configuration, directory=directory or None, command=command or None,
         )
         profile.validate()
-        self.panel_focus_requested.emit(self, True)
+        self.panel_focus_requested.emit(self, False)
         self.activate()
         self._start_profile(profile)
 
     def connect_selected(self, path_index: int | None = None) -> None:
-        self.panel_focus_requested.emit(self, self._preferences.read_terminal_mode())
+        self.panel_focus_requested.emit(self, False)
         self.activate()
         if path_index is not None:
             if self._configuration != self._paths_configuration:
@@ -400,26 +412,47 @@ class ShellPage(ModulePage):
             return
         if not self.terminal.engine.shell_ready:
             self.command_entry.setText(command)
-            self.command_entry.setFocus()
-            self.status.setText(tr("命令已填入输入框，请确认终端空闲后发送"))
+            if self._workspace_focused:
+                self.status.setText(tr("命令已填入输入框，请退出终端专注模式后确认发送"))
+            else:
+                self.command_entry.setFocus()
+                self.status.setText(tr("命令已填入输入框，请确认终端空闲后发送"))
             return
         if self.session.send((command + "\r").encode("utf-8")):
             self.terminal.focus_terminal()
 
-    def _toggle_terminal_mode(self) -> None:
-        self.panel_focus_requested.emit(self, not self._terminal_mode)
-        try:
-            self._preferences.save_terminal_mode(self._terminal_mode)
-        except (OSError, ValueError) as exc:
-            self.status.setText(tr("保存终端模式设置失败：{0}", error_message(exc)))
-
     def set_panel_focus(self, focused: bool) -> None:
-        self._terminal_mode = focused
-        self.mode_button.setText(tr("编辑模式") if focused else tr("终端模式"))
-        self._apply_monitor_visibility()
-        if self.isVisible():
-            QTimer.singleShot(0, self.terminal.fit)
-            self.terminal.focus_terminal()
+        if focused != self._workspace_focused:
+            self._remember_monitor_width(0, 0)
+            self._workspace_focused = focused
+            self._focus_monitor_visible = False
+            self.command_bar.setVisible(not focused)
+            if focused:
+                self._focus_status_layout.insertWidget(0, self.connection_status)
+            else:
+                self._header_layout.insertWidget(1, self.connection_status)
+            self._focus_status_bar.setVisible(focused)
+            self.connection_status.show()
+            self._set_embedded_file_focus(focused)
+            self._apply_monitor_visibility()
+            if self.isVisible():
+                QTimer.singleShot(0, self.terminal.fit)
+                if focused:
+                    self.terminal.focus_terminal()
+
+    def _set_embedded_file_focus(self, focused: bool) -> None:
+        dialog = self._transfer_dialog
+        if dialog is not None and self._file_panel_open:
+            workspace = dialog.workspace
+            if self.terminal_file_splitter.indexOf(workspace) >= 0:
+                if focused:
+                    self._focus_file_sizes = self.terminal_file_splitter.sizes()
+                    workspace.hide()
+                elif self._focus_file_sizes is not None:
+                    workspace.show()
+                    self.terminal_file_splitter.setSizes(self._focus_file_sizes)
+        if not focused:
+            self._focus_file_sizes = None
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -427,22 +460,23 @@ class ShellPage(ModulePage):
         self._apply_monitor_visibility()
 
     def _toggle_monitor_visibility(self) -> None:
-        if self._monitor_visible:
-            self._remember_monitor_width(0, 0)
-        self._monitor_visible = not self._monitor_visible
+        self._remember_monitor_width(0, 0)
+        if self._workspace_focused:
+            self._focus_monitor_visible = not self._focus_monitor_visible
+        else:
+            self._monitor_visible = not self._monitor_visible
+            try:
+                self._preferences.save_monitor_visible(self._monitor_visible)
+            except (OSError, ValueError) as exc:
+                self.status.setText(tr("保存状态栏设置失败：{0}", error_message(exc)))
         self._apply_monitor_visibility()
-        try:
-            self._preferences.save_monitor_visible(self._monitor_visible)
-        except (OSError, ValueError) as exc:
-            self.status.setText(tr("保存状态栏设置失败：{0}", error_message(exc)))
         QTimer.singleShot(0, self.terminal.fit)
 
     def _apply_monitor_visibility(self) -> None:
-        self.monitor_button.setText(tr("隐藏状态栏") if self._monitor_visible else tr("显示状态栏"))
-        visible = self._terminal_mode and self._monitor_visible
+        visible = self._focus_monitor_visible if self._workspace_focused else self._monitor_visible
+        self.monitor_button.setText(tr("隐藏状态栏") if visible else tr("显示状态栏"))
         if visible and self.isVisible():
             self._ensure_monitor()
-        self.monitor_button.setVisible(self._terminal_mode)
         if self._monitor is not None:
             self._monitor.setVisible(visible)
             self.body_splitter.setSizes(
@@ -468,7 +502,7 @@ class ShellPage(ModulePage):
             self.body_splitter.setStretchFactor(1, 1)
 
     def _remember_monitor_width(self, _position: int, _index: int) -> None:
-        if self._monitor is not None and self._terminal_mode and not self._monitor.isHidden():
+        if self._monitor is not None and not self._monitor.isHidden():
             self._monitor_width = max(220, min(400, self.body_splitter.sizes()[0]))
 
     def _send_command(self) -> None:
@@ -598,7 +632,7 @@ class ShellPage(ModulePage):
                 dialog.update_profile(profile.name, profile.directory, server_address=profile.configuration.ip_address)
             self.terminal.clear()
             if self._log_service is not None:
-                self._log_writer = self._log_service.open_session("shell", profile.name)
+                self._log_writer = self._log_service.open_session("shell", profile.name, resource=profile.name)
                 self._last_log_writer = self._log_writer
                 self.log_button.setText(tr("日志"))
                 self.log_button.setToolTip("")
@@ -861,7 +895,7 @@ class ShellPage(ModulePage):
         self.status.setText(tr("已连接"))
 
     def _show_file_panel(self, dialog) -> None:
-        opened = self._file_panel_open
+        opened = self._file_panel_open and not dialog.workspace.isHidden()
         if self.terminal_file_splitter.indexOf(dialog.workspace) < 0:
             workspace = dialog.embed_files(self.terminal_file_splitter)
             self.terminal_file_splitter.addWidget(workspace)

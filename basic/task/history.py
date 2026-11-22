@@ -1,6 +1,7 @@
 """Encrypted workflow execution summaries with links to existing session logs."""
 import json
 import math
+import re
 from collections import OrderedDict
 from copy import deepcopy
 from threading import Condition, Thread
@@ -14,6 +15,10 @@ from basic.log.viewer import LogViewer
 from common.configuration.codec import read_text, write_text
 from common.i18n import tr
 from common.i18n.widgets import QDialog, QLabel, QPushButton, QTreeWidget, QTreeWidgetItem
+from .schema import node_display_name
+
+_TASK_EVENT = re.compile(r"(?m)^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] \[task(?:-step-(\d+))?\] ")
+
 
 STATES = {"running": "正在执行", "waiting": "等待执行", "success": "执行成功", "failed": "执行失败", "stopped": "已停止", "pending": "尚未执行", "unfinished": "未结束"}
 
@@ -56,7 +61,7 @@ class RunHistoryStore:
                 raise ValueError("Invalid history record")
         return record
 
-    def records(self):
+    def records(self, task_name=None):
         self.failed_reads = 0
         if not self.directory.exists():
             return []
@@ -74,6 +79,8 @@ class RunHistoryStore:
                 record = self.validate_record(json.loads(read_text(path)))
             except (OSError, ValueError, TypeError, KeyError, OverflowError):
                 self.failed_reads += 1
+                continue
+            if task_name is not None and record["task"] != task_name:
                 continue
             records.append(record)
             if len(records) >= 200:
@@ -146,59 +153,104 @@ class RunHistoryWriter(QObject):
 
 
 class RunHistoryDialog(QDialog):
-    def __init__(self, store, labels, log_roots, active_id=None, parent=None, pending=()):
+    records_loaded = Signal(object, int, str)
+
+    def __init__(self, store, labels, log_roots, active_id=None, parent=None, pending=(), active_ids=(), *, task_name=None):
         super().__init__(parent)
-        self.setWindowTitle(tr("执行记录"))
+        self.setWindowTitle(tr("执行记录") if task_name is None else tr("{0} · {1}", task_name, tr("执行记录")))
         self.resize(1050, 700)
+        active_ids = set(active_ids) | {active_id}
         self.labels, self.log_roots = labels, [Path(root).resolve() for root in log_roots]
         layout = QVBoxLayout(self)
-        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        details = QSplitter(Qt.Orientation.Vertical)
         self.runs = QTreeWidget()
         self.runs.setRootIsDecorated(False)
-        self.runs.setHeaderLabels([tr("任务"), tr("开始时间"), tr("状态"), tr("耗时（秒）")])
+        columns = [tr("开始时间"), tr("状态"), tr("耗时（秒）")]
+        self.runs.setHeaderLabels([tr("任务"), *columns] if task_name is None else columns)
         self.runs.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         splitter.addWidget(self.runs)
         self.steps = QTreeWidget()
         self.steps.setRootIsDecorated(False)
         self.steps.setHeaderLabels([tr("流程"), tr("状态"), tr("耗时（秒）")])
-        splitter.addWidget(self.steps)
+        details.addWidget(self.steps)
+        from .run_page import RunFlowView
+        self.flow = RunFlowView()
+        self.flow.set_editable(False)
+        self.flow.hide()
+        details.addWidget(self.flow)
         log_viewer = LogViewer(self)
         self.details = log_viewer.text
         self.details.setMaximumBlockCount(10000)
-        splitter.addWidget(log_viewer)
-        splitter.setSizes([220, 160, 300])
+        details.addWidget(log_viewer)
+        details.setSizes([120, 220, 300])
+        splitter.addWidget(details)
+        splitter.setSizes([380, 670])
+        self._full_output = ""
+        self._step_output = {}
+        self.steps.currentItemChanged.connect(self._show_output)
+        self.flow.step_selected.connect(self._select_flow_step)
+        all_output = QPushButton(tr("全部步骤"))
+        all_output.clicked.connect(lambda: self._select_flow_step(-1))
         layout.addWidget(splitter, 1)
         close = QPushButton(tr("关闭"))
         close.clicked.connect(self.accept)
         row = QHBoxLayout()
         row.addWidget(QLabel(tr("显示最近 200 次执行记录；日志显示末尾 4 MiB。")))
         row.addStretch()
+        row.addWidget(all_output)
         row.addWidget(close)
         layout.addLayout(row)
-        records = {record["id"]: record for record in store.records()}
+        self.runs.currentItemChanged.connect(self._select)
+        self.details.setPlainText(str(tr("正在读取日志列表…")))
+        self._history_context = pending, task_name, active_id, active_ids
+        self.records_loaded.connect(self._display_records, Qt.ConnectionType.QueuedConnection)
+        Thread(target=self._load_records, args=(store, task_name), name="task-history-reader", daemon=True).start()
+
+    def _load_records(self, store, task_name):
+        try:
+            records, failed, error = store.records(task_name), store.failed_reads, ""
+        except (OSError, ValueError) as exc:
+            records, failed, error = [], 0, str(exc)
+        try:
+            self.records_loaded.emit(records, failed, error)
+        except RuntimeError:
+            pass
+
+    def _display_records(self, stored, failed, error):
+        pending, task_name, active_id, active_ids = self._history_context
+        records = {record["id"]: record for record in stored}
         for record in pending:
+            if task_name is not None and record["task"] != task_name:
+                continue
             existing = records.get(record["id"])
             if existing is None or record.get("_revision", 0) >= existing.get("_revision", 0):
                 records[record["id"]] = record
-        if store.failed_reads:
-            warning = QLabel(tr("有 {0} 条执行记录读取失败，已跳过；原文件已保留。", store.failed_reads))
+        if failed or error:
+            warning = QLabel(error or tr("有 {0} 条执行记录读取失败，已跳过；原文件已保留。", failed))
             warning.setWordWrap(True)
-            layout.insertWidget(0, warning)
+            self.layout().insertWidget(0, warning)
         for record in sorted(records.values(), key=lambda item: item["started"], reverse=True)[:200]:
             state = record["state"]
-            if state == "running" and record["id"] != active_id:
+            if state == "running" and record["id"] not in active_ids:
                 state = "unfinished"
             if state == "unfinished":
                 for step in record["steps"]:
                     if step["state"] in {"running", "waiting"}:
                         step["state"] = "unfinished"
             elapsed = (record["finished"] or time()) - record["started"] if state != "unfinished" else None
-            item = QTreeWidgetItem([record["task"], datetime.fromtimestamp(record["started"]).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], str(tr(STATES.get(state, state))), f"{elapsed:.3f}" if elapsed is not None else "--"])
+            columns = [
+                datetime.fromtimestamp(record["started"]).strftime("%Y-%m-%d %H:%M:%S"),
+                str(tr(STATES.get(state, state))), f"{elapsed:.3f}" if elapsed is not None else "--",
+            ]
+            item = QTreeWidgetItem([record["task"], *columns] if task_name is None else columns)
             item.setData(0, Qt.ItemDataRole.UserRole, record)
             self.runs.addTopLevelItem(item)
-        self.runs.currentItemChanged.connect(self._select)
         if self.runs.topLevelItemCount():
-            self.runs.setCurrentItem(self.runs.topLevelItem(0))
+            self.runs.resizeColumnToContents(0)
+            selected = next((self.runs.topLevelItem(i) for i in range(self.runs.topLevelItemCount())
+                             if self.runs.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)["id"] == active_id), None)
+            self.runs.setCurrentItem(selected or self.runs.topLevelItem(0))
         else:
             self.details.setPlainText(str(tr("暂无执行记录")))
 
@@ -207,9 +259,19 @@ class RunHistoryDialog(QDialog):
             return
         record = item.data(0, Qt.ItemDataRole.UserRole)
         self.steps.clear()
+        self._show_flow(record)
+        snapshot = record.get("flow")
+        named_steps = snapshot.get("steps", []) if isinstance(snapshot, dict) else []
+        named_steps = named_steps if isinstance(named_steps, list) else []
         for index, step in enumerate(record["steps"], 1):
             elapsed = step["finished"] - step["started"] if step.get("finished") and step.get("started") else None
-            self.steps.addTopLevelItem(QTreeWidgetItem([str(tr("{0}. {1}", index, tr(self.labels.get(step["type"], step["type"])))), str(tr(STATES.get(step["state"], step["state"]))), f"{elapsed:.3f}" if elapsed is not None else "--"]))
+            saved_node = named_steps[index - 1] if index <= len(named_steps) else None
+            if isinstance(saved_node, dict) and saved_node.get("type") == step["type"]:
+                label = node_display_name(saved_node)
+            else:
+                label = tr(self.labels.get(step["type"], step["type"]))
+            self.steps.addTopLevelItem(QTreeWidgetItem([str(tr("{0}. {1}", index, label)), str(tr(STATES.get(step["state"], step["state"]))), f"{elapsed:.3f}" if elapsed is not None else "--"]))
+        self._step_output.clear()
         text = record.get("message", "")
         try:
             path = Path(record["log"]).resolve()
@@ -218,7 +280,63 @@ class RunHistoryDialog(QDialog):
             with path.open("rb") as handle:
                 size = handle.seek(0, 2)
                 handle.seek(max(0, size - 4 * 1024 * 1024))
-                text += "\n\n" + handle.read(4 * 1024 * 1024).decode("utf-8", "replace")
+                output = handle.read(4 * 1024 * 1024).decode("utf-8", "replace")
+                events = list(_TASK_EVENT.finditer(output))
+                for position, event in enumerate(events):
+                    if event[1] is None:
+                        continue
+                    end = events[position + 1].start() if position + 1 < len(events) else len(output)
+                    self._step_output.setdefault(int(event[1]), []).append(output[event.end():end])
+                text += "\n\n" + output
         except (OSError, ValueError) as error:
             text += "\n" + str(error)
-        self.details.setPlainText(text)
+        self._full_output = text
+        self._show_output(None)
+
+    def _select_flow_step(self, index):
+        item = self.steps.topLevelItem(index) if index >= 0 else None
+        self.steps.setCurrentItem(item)
+        if item is None:
+            self._show_output(None)
+
+    def _show_output(self, item, _previous=None):
+        if item is None:
+            self.details.setPlainText(self._full_output)
+        else:
+            chunks = self._step_output.get(self.steps.indexOfTopLevelItem(item), ())
+            self.details.setPlainText("".join(chunks) if chunks else str(tr("此节点没有可单独查看的日志")))
+
+    def _show_flow(self, record):
+        from .graph import graph_structure
+        graph = record.get("flow")
+        self.flow.hide()
+        if not isinstance(graph, dict):
+            return
+        steps = graph.get("steps")
+        if not isinstance(steps, list) or len(steps) != len(record["steps"]):
+            return
+        if any(not isinstance(step, dict) or step.get("type") != saved["type"]
+               for step, saved in zip(steps, record["steps"])):
+            return
+        graph = {
+            "steps": [{key: step[key] for key in ("type", "node_id", "position", "name") if key in step}
+                      for step in steps],
+            "links": graph.get("links"),
+        }
+        try:
+            graph_structure(graph)
+        except (KeyError, TypeError, ValueError):
+            return
+        start = record["flow"].get("start_position")
+        if (isinstance(start, list) and len(start) == 2
+                and all(type(value) in (int, float) and -1000000 <= value <= 1000000 for value in start)):
+            graph["start_position"] = start
+        self.flow.clear_states()
+        self.flow.display_steps(graph["steps"], graph=graph)
+        indexes = record.get("selected_indexes")
+        selected = {index for index in indexes if type(index) is int} if isinstance(indexes, list) else set(range(len(steps)))
+        for index, step in enumerate(record["steps"]):
+            state = step["state"] if index in selected else "excluded"
+            self.flow.set_step_state(index, state if state != "unfinished" else "pending")
+        self.flow.show()
+        self.flow.center_flow()

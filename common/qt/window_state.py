@@ -79,14 +79,12 @@ class WindowStateController(QObject):
             return None
         return module_id if module_id in available else next(iter(available), None)
 
-    def restore_page(self, module_id: str, page: ModulePage) -> None:
+    def activate_page(self, module_id: str, page: ModulePage) -> None:
         if module_id in self._restored_pages:
+            page.activate()
             return
         self._restored_pages.add(module_id)
-        item_id = self._selected_items.get(module_id)
-        if item_id in {identifier for identifier, _name in page.directory_items()}:
-            # Selection loads the editor only; activate_item could start SSH.
-            page.select_item(item_id)
+        page.activate_with_selection(self._selected_items.get(module_id))
 
     def restore_layout(self) -> None:
         self._apply_layout()

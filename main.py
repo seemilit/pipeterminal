@@ -2,10 +2,13 @@
 
 import sys
 
-from app.bootstrap import run
+from app.crash_log import install_crash_logging
 
 
 def main() -> int:
+    install_crash_logging(__file__)
+    from app.bootstrap import run
+
     return run()
 
 

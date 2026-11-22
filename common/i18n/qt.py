@@ -1,7 +1,7 @@
 """Qt's built-in dialogs share the application's selected language."""
 
 from PySide6.QtCore import QEvent, QLibraryInfo, QObject, QTranslator
-from PySide6.QtWidgets import QDialog, QDialogButtonBox
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QMessageBox
 
 from . import current_language, tr
 
@@ -20,12 +20,34 @@ class DialogButtonTranslator(QObject):
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Show and isinstance(watched, QDialog):
+            if isinstance(watched, QMessageBox):
+                self._style_button_roles(watched)
             for button_box in watched.findChildren(QDialogButtonBox):
+                if not isinstance(watched, QMessageBox):
+                    self._style_button_roles(button_box)
                 for role, source in self._TEXT_BY_BUTTON.items():
                     button = button_box.button(role)
                     if button is not None:
                         button.setText(tr(source))
         return False
+
+    @staticmethod
+    def _style_button_roles(container: QDialogButtonBox | QMessageBox) -> None:
+        roles = type(container).ButtonRole
+        buttons = container.buttons()
+        primary = next(
+            (button for role in (roles.AcceptRole, roles.YesRole, roles.ApplyRole)
+             for button in buttons if container.buttonRole(button) == role),
+            None,
+        )
+        for button in buttons:
+            highlighted = button is primary
+            if bool(button.property("dialogPrimary")) != highlighted:
+                button.setProperty("dialogPrimary", highlighted)
+                style = button.style()
+                style.unpolish(button)
+                style.polish(button)
+                button.update()
 
 
 def install_qt_translations(application) -> None:

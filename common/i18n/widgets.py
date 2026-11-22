@@ -3,7 +3,7 @@
 from weakref import WeakValueDictionary
 
 from PySide6 import QtGui, QtWidgets
-from PySide6.QtCore import QObject, QSignalBlocker
+from PySide6.QtCore import QObject, QSignalBlocker, Qt
 from shiboken6 import isValid
 
 from . import TranslatedText, render_text
@@ -88,6 +88,7 @@ QLabel = _widget(QtWidgets.QLabel, "setText")
 QPushButton = _widget(QtWidgets.QPushButton, "setText")
 QToolButton = _widget(QtWidgets.QToolButton, "setText")
 QCheckBox = _widget(QtWidgets.QCheckBox, "setText")
+QRadioButton = _widget(QtWidgets.QRadioButton, "setText")
 QGroupBox = _widget(QtWidgets.QGroupBox, "setTitle")
 QAction = _widget(QtGui.QAction, "setText")
 QLineEdit = _widget(QtWidgets.QLineEdit)
@@ -98,6 +99,41 @@ QProgressBar = _widget(QtWidgets.QProgressBar)
 QTreeWidgetItem = _widget(QtWidgets.QTreeWidgetItem, indexed=("setText", "setToolTip"))
 QTreeWidget = _widget(QtWidgets.QTreeWidget, indexed=())
 QTreeWidget.setHeaderLabels = _setter(QtWidgets.QTreeWidget, "setHeaderLabels")
+
+
+class _ComboTranslation:
+    def __init__(self, text: TranslatedText):
+        self.text = text
+
+
+class QComboBox(QtWidgets.QComboBox):
+    _translation_role = Qt.ItemDataRole.UserRole + 127
+
+    def addItem(self, *args):
+        self.insertItem(self.count(), *args)
+
+    def insertItem(self, index, *args):
+        position = max(0, min(index, self.count()))
+        text_index = int(isinstance(args[0], QtGui.QIcon))
+        text = args[text_index]
+        super().insertItem(index, *args[:text_index], _render(text), *args[text_index + 1:])
+        if isinstance(text, TranslatedText):
+            self.setItemData(position, _ComboTranslation(text), self._translation_role)
+            _bound_widgets[id(self)] = self
+
+    def setItemText(self, index, text):
+        super().setItemText(index, _render(text))
+        translation = _ComboTranslation(text) if isinstance(text, TranslatedText) else None
+        self.setItemData(index, translation, self._translation_role)
+        if translation is not None:
+            _bound_widgets[id(self)] = self
+
+    def _refresh_translations(self):
+        with QSignalBlocker(self):
+            for index in range(self.count()):
+                translation = self.itemData(index, self._translation_role)
+                if isinstance(translation, _ComboTranslation):
+                    super().setItemText(index, translation.text.render())
 
 
 class QProgressDialog(_TextBindings, QtWidgets.QProgressDialog):

@@ -4,9 +4,9 @@ from threading import Thread
 from bisect import bisect_right
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCursor, QTextFormat
-from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QMenu, QMessageBox, QSplitter, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QMenu, QMessageBox, QSplitter, QTextEdit, QVBoxLayout, QWidget
 from common.i18n import tr
-from common.i18n.widgets import QDialog, QLabel, QPushButton
+from common.i18n.widgets import QCheckBox, QComboBox, QDialog, QLabel, QPushButton
 from .conflict_diff import ConflictDiff
 from .merge_display import AlignedCodeEdit, aligned_rows
 from .merge_visuals import CodeHighlighter, ConnectionLane, DifferenceOverview, MergeActionButton
@@ -63,11 +63,11 @@ class MergeEditor(QDialog, ConflictDiff):
             toolbar.addWidget(button)
             self._actions[label] = button
         self.highlight_mode = QComboBox()
-        self.highlight_mode.addItem(str(tr("按词高亮")), "word")
-        self.highlight_mode.addItem(str(tr("按行高亮")), "line")
+        self.highlight_mode.addItem(tr("按词高亮"), "word")
+        self.highlight_mode.addItem(tr("按行高亮"), "line")
         self.highlight_mode.currentIndexChanged.connect(self._display_changed)
         toolbar.addWidget(self.highlight_mode)
-        self.ignore_space = QCheckBox(str(tr("忽略空白差异")))
+        self.ignore_space = QCheckBox(tr("忽略空白差异"))
         self.ignore_space.toggled.connect(self._display_changed)
         toolbar.addWidget(self.ignore_space)
         toolbar.addStretch()
@@ -115,7 +115,7 @@ class MergeEditor(QDialog, ConflictDiff):
         self.result.customContextMenuRequested.connect(self._menu)
         footer = QHBoxLayout()
         footer.addWidget(QLabel(tr("无冲突修改已自动应用")))
-        self.next_file = QCheckBox(str(tr("应用后打开下一文件")))
+        self.next_file = QCheckBox(tr("应用后打开下一文件"))
         footer.addWidget(self.next_file)
         suggest = QPushButton(tr("简单冲突建议"))
         suggest.clicked.connect(self._suggest)

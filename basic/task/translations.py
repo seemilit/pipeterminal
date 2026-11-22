@@ -11,6 +11,9 @@ MESSAGES = {
 
 
 ROWS = (
+    ("未找到 Java，请配置 JAVA_HOME 或 PATH", "Java not found. Configure JAVA_HOME or PATH.", "找不到 Java，請設定 JAVA_HOME 或 PATH。", "Java が見つかりません。JAVA_HOME または PATH を設定してください。", "Java를 찾을 수 없습니다. JAVA_HOME 또는 PATH를 설정하세요.", "No se encontró Java. Configura JAVA_HOME o PATH."),
+    ("未找到可用的本地命令解释器", "No local command interpreter found.", "找不到可用的本機命令直譯器。", "利用できるローカルのコマンドインタープリターが見つかりません。", "사용할 수 있는 로컬 명령 인터프리터를 찾을 수 없습니다.", "No se encontró un intérprete de comandos local."),
+    ("请先添加服务器配置", "Add a server configuration first.", "請先新增伺服器設定。", "先にサーバー設定を追加してください。", "먼저 서버 구성을 추가하세요.", "Añade primero una configuración de servidor."),
     ("免费版每个流程最多添加 {0} 个节点，增加更多节点需要付费授权", "The free edition allows up to {0} nodes per workflow. Adding more requires a paid license.", "免費版每個流程最多新增 {0} 個節點，新增更多節點需要付費授權。", "無料版ではフローごとに最大 {0} 個のノードを追加できます。それ以上の追加には有料ライセンスが必要です。", "무료 버전에서는 워크플로당 노드를 최대 {0}개까지 추가할 수 있습니다. 더 추가하려면 유료 라이선스가 필요합니다.", "La edición gratuita admite hasta {0} nodos por flujo. Para añadir más se necesita una licencia de pago."),
     ("开始", "Start", "開始", "開始", "시작", "Inicio"),
     ("连线不能形成循环", "Connections cannot form a cycle", "連線不能形成迴圈", "接続を循環させることはできません", "연결에 순환이 생길 수 없습니다", "Las conexiones no pueden formar un ciclo"),
@@ -232,6 +235,13 @@ ROWS += (
     ("选择节点后可直接修改参数", "Select a node to edit its parameters", "選擇節點後可直接修改參數", "ノードを選択してパラメータを編集", "노드를 선택하여 매개변수 편집", "Seleccione un nodo para editar sus parámetros"),
     ("等待执行", "Waiting", "等待執行", "待機中", "대기 중", "En espera"),
     ("正在执行", "Running", "正在執行", "実行中", "실행 중", "En ejecución"),
+    ("未命名", "Untitled", "未命名", "無題", "이름 없음", "Sin título"),
+    ("节点名称（选填）", "Node name (optional)", "節點名稱（選填）", "ノード名（任意）", "노드 이름(선택)", "Nombre del nodo (opcional)"),
+    ("同时执行多个任务需要付费授权", "Running multiple tasks simultaneously requires a paid license", "同時執行多個任務需要付費授權", "複数タスクの同時実行には有料ライセンスが必要です", "여러 작업을 동시에 실행하려면 유료 라이선스가 필요합니다", "La ejecución simultánea de varias tareas requiere una licencia de pago"),
+    ("返回任务编辑", "Back to task editor", "返回任務編輯", "タスク編集に戻る", "작업 편집으로 돌아가기", "Volver al editor de tareas"),
+    ("计时中", "Timing", "計時中", "計測中", "시간 측정 중", "Temporizando"),
+    ("剩余 {0} 秒", "{0} s left", "剩餘 {0} 秒", "残り {0} 秒", "{0}초 남음", "Quedan {0} s"),
+    ("{0} · 已结束 {1}/{2} 步 · {3} 秒", "{0} · {1}/{2} steps finished · {3} s", "{0} · 已結束 {1}/{2} 步 · {3} 秒", "{0} · {1}/{2} ステップ終了 · {3} 秒", "{0} · {1}/{2}단계 종료 · {3}초", "{0} · {1}/{2} pasos finalizados · {3} s"),
     ("执行批次", "Run", "執行批次", "実行履歴", "실행 회차", "Ejecución"),
     ("执行 #{0} · {1} · {2}", "Run #{0} · {1} · {2}", "執行 #{0} · {1} · {2}", "実行 #{0} · {1} · {2}", "실행 #{0} · {1} · {2}", "Ejecución #{0} · {1} · {2}"),
     ("停止任务", "Stop task", "停止任務", "タスクを停止", "작업 중지", "Detener tarea"),
@@ -376,8 +386,10 @@ ROWS += (
 
 ROWS += (
     ("删除节点", "Delete node", "刪除節點", "ノードを削除", "노드 삭제", "Eliminar nodo"),
+    ("流程节点已变化，请重新打开执行页面", "Workflow nodes have changed. Reopen the execution page.", "流程節點已變更，請重新開啟執行頁面", "ノードが変更されました。実行ページを開き直してください。", "워크플로 노드가 변경되었습니다. 실행 페이지를 다시 여세요.", "Los nodos del flujo han cambiado. Vuelve a abrir la página de ejecución."),
     ("从此节点开始执行", "Run from this node", "從此節點開始執行", "このノードから実行", "이 노드부터 실행", "Ejecutar desde este nodo"),
-    ("执行此节点", "Run this node", "執行此節點", "このノードを実行", "이 노드 실행", "Ejecutar este nodo"),
+    ("任务已保存，但历史版本保存失败：{0}", "The task was saved, but its version could not be recorded: {0}", "任務已儲存，但無法儲存歷史版本：{0}", "タスクは保存されましたが、履歴の保存に失敗しました：{0}", "작업은 저장됐지만 버전 기록은 저장하지 못했습니다: {0}", "La tarea se guardó, pero no se pudo registrar su versión: {0}"),
+    ("仅执行此节点", "Run this node only", "僅執行此節點", "このノードのみ実行", "이 노드만 실행", "Ejecutar solo este nodo"),
     ("仅执行选中节点", "Run selected nodes only", "僅執行選取的節點", "選択したノードのみ実行", "선택한 노드만 실행", "Ejecutar solo los nodos seleccionados"),
     ("按住 Ctrl 单击可多选节点", "Ctrl-click to select multiple nodes", "按住 Ctrl 點擊可選取多個節點", "Ctrl を押しながらクリックして複数選択", "Ctrl 키를 누른 채 클릭하여 여러 노드 선택", "Ctrl + clic para seleccionar varios nodos"),
     ("本次执行须包含对应的打包节点", "Include the matching build node in this run", "本次執行須包含對應的打包節點", "今回の実行に対応するビルドノードを含めてください", "이번 실행에 해당 빌드 노드를 포함하세요", "Incluye el nodo de compilación correspondiente en esta ejecución"),
@@ -394,6 +406,30 @@ ROWS += (
 
 ROWS += (
     ("执行输出", "Run output", "執行輸出", "実行出力", "실행 출력", "Salida de ejecución"),
+    ("显示执行输出", "Show run output", "顯示執行輸出", "実行出力を表示", "실행 출력 표시", "Mostrar salida de ejecución"),
+    ("选择节点以查看参数", "Select a node to view its parameters", "選取節點以檢視參數", "ノードを選択してパラメーターを表示", "매개변수를 볼 노드를 선택하세요", "Selecciona un nodo para ver sus parámetros"),
+    ("搜索", "Search", "搜尋", "検索", "검색", "Buscar"),
+    ("选择", "Choose", "選擇", "選択", "선택", "Elegir"),
+)
+
+ROWS += (
+    ('执行结果', 'Run results', '執行結果', '実行結果', '실행 결과', 'Resultados'),
+    ('任务已停止', 'Task stopped', '任務已停止', 'タスクを停止しました', '작업 중지됨', 'Tarea detenida'),
+    ('已完成', 'Completed', '已完成', '完了', '완료', 'Completados'),
+    ('已中断', 'Interrupted', '已中斷', '中断', '중단됨', 'Interrumpidos'),
+    ('未执行', 'Not executed', '未執行', '未実行', '실행 안 됨', 'Sin ejecutar'),
+    ('已完成的操作不会撤销；中断步骤可能已产生部分结果。', 'Completed operations are not rolled back; interrupted steps may have partial effects.', '已完成的操作不會撤銷；中斷步驟可能已產生部分結果。', '完了した操作は取り消されません。中断したステップには部分的な結果が残る場合があります。', '완료된 작업은 취소되지 않으며 중단된 단계에 일부 결과가 남을 수 있습니다.', 'Las operaciones completadas no se revierten; los pasos interrumpidos pueden tener efectos parciales.'),
+)
+
+ROWS += (
+    ("全部步骤", "All steps", "全部步驟", "すべてのステップ", "모든 단계", "Todos los pasos"),
+    ("等待处理", "Action required", "等待處理", "操作待ち", "조치 대기", "Acción requerida"),
+    ("未参与", "Excluded from run", "未參與", "実行対象外", "실행 대상 아님", "Fuera de la ejecución"),
+    ("任务正在执行", "Task is running", "任務正在執行", "タスクを実行中", "작업 실행 중", "Tarea en ejecución"),
+    ("选择关闭执行标签后的操作", "Choose what to do when closing this run tab", "選擇關閉執行分頁後的操作", "実行タブを閉じるときの操作を選択", "실행 탭을 닫을 때의 동작을 선택하세요", "Elige qué hacer al cerrar esta pestaña"),
+    ("后台继续", "Continue in background", "在背景繼續", "バックグラウンドで続行", "백그라운드에서 계속", "Continuar en segundo plano"),
+    ("停止并关闭", "Stop and close", "停止並關閉", "停止して閉じる", "중지하고 닫기", "Detener y cerrar"),
+    ("{0} · {1}/{2} · {3} 秒", "{0} · {1}/{2} · {3} s", "{0} · {1}/{2} · {3} 秒", "{0} · {1}/{2} · {3} 秒", "{0} · {1}/{2} · {3}초", "{0} · {1}/{2} · {3} s"),
 )
 
 for index, language in enumerate(("en", "zh_TW", "ja", "ko", "es"), 1):

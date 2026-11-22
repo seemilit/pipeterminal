@@ -1,15 +1,55 @@
 """Shared preflight validation for the editor and background runner."""
 from copy import deepcopy
 from common.i18n import tr
-from .schema import STEP_LABELS
+from .schema import FIELD_LABELS, STEP_LABELS
 from .git.schema import POLICIES, STEP_FIELDS
 from .git.build import validate_build
 from .graph import START, graph_structure
-from .execution.schema import STEP_LABELS as EXECUTION_LABELS, validate
+from .execution.schema import STEP_LABELS as EXECUTION_LABELS, effective_kind, validate, working_directory_required
 from .upload import STEP_LABELS as UPLOAD_LABELS, validate_upload
 from .health import validate_health
 from .shell_panel import validate_shell_panel
 from .wait import wait_seconds
+from .environment import environment_issue
+
+
+_REQUIRED_FIELDS = {
+    "MERGE_BRANCH": ("SOURCE_PROJECT_PATH", "TARGET_PROJECT_PATH"),
+    "COMMIT_PUSH": ("PROJECT_PATH",),
+    "PULL": ("PROJECT_PATH",),
+    "MAVEN_BUILD": ("PROJECT_PATH",),
+    "UPLOAD_JAR": ("SERVER", "UPLOAD_DIRECTORY"),
+    "UPLOAD_FILE": ("UPLOAD_SOURCE", "SERVER", "UPLOAD_DIRECTORY"),
+    "UPLOAD_FOLDER": ("UPLOAD_SOURCE", "SERVER", "UPLOAD_DIRECTORY"),
+    "OPEN_SHELL": ("SERVER",),
+    "HEALTH_CHECK": ("SERVER", "HEALTH_COMMAND"),
+}
+
+
+def missing_parameters_message(step):
+    kind = step["type"]
+    properties = step.get("properties", {})
+    required = _REQUIRED_FIELDS.get(kind, ())
+    if kind in EXECUTION_LABELS:
+        try:
+            execution_kind = effective_kind(kind, properties)
+        except ValueError as error:
+            return str(error)
+        if execution_kind.startswith("REMOTE"):
+            required += ("SERVER",)
+        elif working_directory_required(execution_kind):
+            required += ("WORKING_DIRECTORY",)
+        if execution_kind.endswith("COMMAND"):
+            required += ("COMMAND",)
+        elif "SCRIPT_CONTENT" in properties or "SCRIPT_PATH" not in properties:
+            required += ("SCRIPT_CONTENT",)
+        elif not isinstance(properties["SCRIPT_PATH"], str) or not properties["SCRIPT_PATH"].strip():
+            required += ("SCRIPT_CONTENT",)
+    missing = [
+        tr(FIELD_LABELS[key]) for key in required
+        if not isinstance(properties.get(key), str) or not properties[key].strip()
+    ]
+    return tr("请填写：{0}", ", ".join(map(str, missing))) if missing else ""
 
 
 def _preceding_build(steps, index, project):
@@ -82,6 +122,9 @@ def prepare_workflow(document, server_store=None, *, indexes=None, check_connect
                 raise ValueError(tr("任务为空或包含尚未支持的流程"))
             if check_connections and index + 1 in selected and step.get("connection_disabled", False):
                 issues.append((index, str(tr("此节点与下一步之间的连线已断开"))))
+            missing = missing_parameters_message(step)
+            if missing:
+                raise ValueError(missing)
             if kind == "MAVEN_BUILD":
                 validate_build(properties)
                 name = properties.setdefault("ARTIFACT_NAME", "artifact").strip()
@@ -131,10 +174,13 @@ def prepare_workflow(document, server_store=None, *, indexes=None, check_connect
             else:
                 for key in STEP_FIELDS[kind]:
                     value = properties.get(key, "")
-                    if not isinstance(value, str) or (key.endswith("PROJECT_PATH") and not value.strip()):
+                    if not isinstance(value, str) or "\0" in value:
                         raise ValueError(tr("请填写有效的流程参数"))
                 if properties.get("CONFLICT_POLICY", "rollback") not in POLICIES:
                     raise ValueError(tr("请填写有效的流程参数"))
+            unavailable = environment_issue(kind, properties, servers=servers)
+            if unavailable:
+                raise ValueError(unavailable)
             remote = kind in UPLOAD_LABELS or kind in {"HEALTH_CHECK", "OPEN_SHELL"} or kind.startswith("REMOTE_")
             if remote and servers is not None:
                 name = properties.get("SERVER", "")

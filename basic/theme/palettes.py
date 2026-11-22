@@ -57,8 +57,8 @@ class ThemePalette:
 THEMES = {
     "white": ThemePalette(
         "white", "晨雾", False,
-        "#f3f5f9", "#ffffff", "#edf0f5", "#202938", "#66758a",
-        "#dfe4ed", "#f1f4f9", "#356ae6", "#e8efff", "#244fa8",
+        "#f5f5f5", "#ffffff", "#fafafa", "#1f1f1f", "#666666",
+        "#e5e5e5", "#f5f5f5", "#1677ff", "#e6f4ff", "#0958d9",
     ),
     "nord": ThemePalette(
         "nord", "北境", True,

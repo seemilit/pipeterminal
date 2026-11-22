@@ -25,4 +25,5 @@ def get_module() -> ModuleDescriptor:
         sidebar=True,
         sidebar_position="bottom",
         page_factory=create_page,
+        page_kind="dialog",
     )

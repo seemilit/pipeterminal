@@ -32,6 +32,17 @@ def create_icon(name: str, color: str | None = None) -> QIcon:
             ))
         painter.drawPolygon(QPolygonF(points))
         painter.drawEllipse(QPointF(12, 12), 3, 3)
+    elif name in {"workspace_focus", "workspace_unfocus"}:
+        corner, direction = (4, 1) if name == "workspace_focus" else (9, -1)
+        for x, horizontal in ((corner, direction), (24 - corner, -direction)):
+            for y, vertical in ((corner, direction), (24 - corner, -direction)):
+                painter.drawPolyline(QPolygonF([
+                    QPointF(x + 5 * horizontal, y), QPointF(x, y), QPointF(x, y + 5 * vertical),
+                ]))
+    elif name == "history":
+        painter.drawEllipse(QPointF(12, 12), 8, 8)
+        painter.drawLine(QPointF(12, 7), QPointF(12, 12))
+        painter.drawLine(QPointF(12, 12), QPointF(16, 14))
     elif name == "log":
         painter.drawRect(5, 3, 14, 18)
         for row in (8, 12, 16):
@@ -59,6 +70,9 @@ def create_icon(name: str, color: str | None = None) -> QIcon:
         painter.drawEllipse(QPointF(12, 12), 9, 9)
         painter.drawEllipse(8, 3, 8, 18)
         painter.drawLine(3, 12, 21, 12)
+    elif name == "plus":
+        painter.drawLine(5, 12, 19, 12)
+        painter.drawLine(12, 5, 12, 19)
     elif name == "new":
         outline = QPainterPath(QPointF(5, 3))
         for x, y in ((14, 3), (19, 8), (19, 21), (5, 21)):

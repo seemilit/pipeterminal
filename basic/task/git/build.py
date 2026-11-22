@@ -8,6 +8,14 @@ from common.i18n import tr
 from ..execution.engine import ExecutionEngine
 
 
+def maven_launcher(project):
+    windows = os.name == "nt"
+    wrapper = project / ("mvnw.cmd" if windows else "mvnw")
+    if wrapper.is_file():
+        return str(wrapper)
+    return (shutil.which("mvn.cmd") or shutil.which("mvn")) if windows else shutil.which("mvn")
+
+
 def validate_build(properties):
     project = properties.get("PROJECT_PATH", "")
     timeout = properties.get("BUILD_TIMEOUT", "600")
@@ -72,7 +80,7 @@ class MavenBuild:
             raise ValueError(tr("项目目录中未找到 pom.xml：{0}", str(project)))
         windows = os.name == "nt"
         wrapper = project / ("mvnw.cmd" if windows else "mvnw")
-        executable = str(wrapper) if wrapper.is_file() else (shutil.which("mvn.cmd") or shutil.which("mvn")) if windows else shutil.which("mvn")
+        executable = maven_launcher(project)
         if not executable:
             raise ValueError(tr("未找到 Maven，请配置 Maven Wrapper 或 Maven PATH"))
         if windows:

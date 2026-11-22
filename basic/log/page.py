@@ -1,6 +1,7 @@
 """Read-only log viewer with asynchronous snapshots and guarded deletion."""
 
 import re
+from pathlib import PurePosixPath
 from threading import Thread
 
 from PySide6.QtCore import QTimer, Signal
@@ -22,9 +23,11 @@ _TIMESTAMP_PREFIX = re.compile(r"^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}
 class LogPage(ModulePage):
     _loaded = Signal(int, str, bool, str)
 
-    def __init__(self, pinned_id: str | None = None) -> None:
+    def __init__(self, pinned_id: str | None = None, *, external_directory=False) -> None:
         super().__init__()
         self.service = None
+        self._external_directory = external_directory
+        self._read_log = None
         self._items: list[tuple[str, str]] = []
         self._pinned_id = pinned_id
         self._selected: str | None = pinned_id
@@ -33,17 +36,22 @@ class LogPage(ModulePage):
         self._raw_text = ""
         self._show_timestamps = True
         self.file_actions = {"delete": self.delete_log}
+        self.setObjectName("logPage")
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
         header = QHBoxLayout()
         self.title = QLabel()
+        self.title.setObjectName("pageTitle")
         if pinned_id is not None:
-            self.title.setText(pinned_id)
+            self.title.setText(PurePosixPath(pinned_id).name)
         header.addWidget(self.title, 1)
         self.time_button = QPushButton(tr("隐藏时间"))
         self.time_button.clicked.connect(self._toggle_timestamps)
         header.addWidget(self.time_button)
         refresh = QPushButton(tr("刷新"))
         refresh.clicked.connect(self._poll)
+        self.refresh_button = refresh
         header.addWidget(refresh)
         self.log_viewer = LogViewer(self, header)
         layout.addLayout(header)
@@ -51,6 +59,7 @@ class LogPage(ModulePage):
         self.viewer.setFont(QFont("Cascadia Mono", 10))
         layout.addWidget(self.log_viewer, 1)
         self.notice = QLabel()
+        self.notice.setObjectName("secondaryText")
         layout.addWidget(self.notice)
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
@@ -61,8 +70,9 @@ class LogPage(ModulePage):
         super().bind_registry(registry)
         self.service = registry.get_service("log")
 
-    def bind_service(self, service) -> None:
+    def bind_service(self, service, *, read_log=None) -> None:
         self.service = service
+        self._read_log = read_log
 
     def activate(self) -> None:
         self._poll()
@@ -78,13 +88,14 @@ class LogPage(ModulePage):
     def current_item_id(self) -> str | None:
         return self._selected
 
-    def select_item(self, item_id: str) -> bool:
+    def select_item(self, item_id: str | None) -> bool:
         if item_id != self._selected:
             self._selected = item_id
             self._request += 1
             self._raw_text = ""
             self.viewer.clear()
-            self.title.setText(item_id)
+            self.notice.clear()
+            self.title.setText(PurePosixPath(item_id).name if item_id is not None else "")
             self._read_snapshot()
             self.actions_changed.emit()
         return True
@@ -99,7 +110,7 @@ class LogPage(ModulePage):
     def _poll(self) -> None:
         if self.service is None:
             return
-        if self._pinned_id is not None:
+        if self._pinned_id is not None or self._external_directory:
             self._read_snapshot()
             return
         try:
@@ -130,7 +141,8 @@ class LogPage(ModulePage):
 
     def _read_worker(self, request: int, identifier: str) -> None:
         try:
-            text, truncated = self.service.store.read(identifier)
+            reader = self._read_log or self.service.store.read
+            text, truncated = reader(identifier)
             error = ""
         except (OSError, ValueError) as exc:
             text, truncated, error = "", False, error_message(exc)

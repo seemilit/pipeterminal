@@ -1,19 +1,45 @@
 """Task flow diagram and localized parameter summary."""
 
 from collections import defaultdict
+from math import ceil
 
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRectF, QSize, QSignalBlocker, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QDrag, QKeySequence, QIcon, QPixmap, QPainter, QPainterPath, QPainterPathStroker, QPalette, QPen, QPolygonF
-from PySide6.QtWidgets import QAbstractItemView, QGraphicsItem, QGraphicsRectItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QApplication, QStyle, QTreeWidget, QWidget, QMenu
+from PySide6.QtWidgets import QAbstractItemView, QGraphicsItem, QGraphicsRectItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QApplication, QStyle, QWidget, QMenu
 
 from common.i18n import tr
-from common.i18n.widgets import QTreeWidgetItem
+from common.i18n.widgets import QTreeWidget, QTreeWidgetItem
 
 from .git.schema import POLICIES
 from .graph import START
-from .schema import FIELD_LABELS, STEP_LABELS, CATEGORIES
+from .validation import missing_parameters_message
+from .schema import FIELD_LABELS, STEP_LABELS, CATEGORIES, node_display_name
 from .execution.schema import STEP_LABELS as EXECUTION_LABELS, CHOICES
 from .upload import STEP_LABELS as UPLOAD_LABELS, POLICIES as UPLOAD_POLICIES
+
+
+_FLOW_STATE_LABELS = {
+    "waiting": "等待执行", "running": "正在执行", "success": "执行成功",
+    "failed": "执行失败", "stopped": "已停止", "pending": "尚未执行", "excluded": "未参与",
+}
+
+
+def _draw_edge_pulse(painter, path, length, progress, accent):
+    distance = length * progress
+    start = max(0, distance - 28)
+    previous = path.pointAtPercent(path.percentAtLength(start))
+    painter.save()
+    for index in range(1, 9):
+        fraction = index / 8
+        point = path.pointAtPercent(path.percentAtLength(start + (distance - start) * fraction))
+        color = QColor(accent)
+        color.setAlpha(round(210 * fraction))
+        pen = QPen(color, 2.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(previous, point)
+        previous = point
+    painter.restore()
 
 
 class _FlowNode(QGraphicsRectItem):
@@ -68,7 +94,12 @@ class _FlowNode(QGraphicsRectItem):
         super().__init__(0, 0, 300, 80)
         self._title, self._subtitle, self._palette = title, subtitle, palette
         self.state = ""
+        self.wait_step = False
+        self.wait_duration = 0
+        self.active_seconds = 0.0
+        self.upload_percent = None
         self.error = ""
+        self.missing_parameters = ""
         self.badge = "Git"
         self.quick_add_enabled = False
         self.link_highlights = 0
@@ -76,22 +107,52 @@ class _FlowNode(QGraphicsRectItem):
         self.setAcceptHoverEvents(True)
         self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
-        self.setToolTip(f"{title}\n{subtitle}")
+        self.refresh_tooltip()
+
+    def refresh_tooltip(self):
+        status = ""
+        if self.state:
+            label = "计时中" if self.wait_step and self.state == "running" else _FLOW_STATE_LABELS[self.state]
+            status = str(tr(label))
+        self.setToolTip("\n".join(dict.fromkeys(
+            text for text in (self._title, self._subtitle, status, self.missing_parameters, self.error.strip()) if text
+        )))
 
     def paint(self, painter, option, widget=None):
         palette = self._palette
         selected = self.isSelected()
         highlighted = selected or self.link_target or self.link_highlights > 0 or self.isUnderMouse()
+        running = self.state == "running"
+        status_accent = palette.color(QPalette.ColorRole.Highlight)
         painter.save()
         painter.setPen(Qt.PenStyle.NoPen)
         shadow = QColor(0, 0, 0, 22)
         painter.setBrush(shadow)
         painter.drawRoundedRect(self.rect().translated(0, 3), 9, 9)
         border = QColor("#ef4444") if self.error else palette.color(QPalette.ColorRole.Highlight if highlighted else QPalette.ColorRole.Mid)
-        painter.setPen(QPen(border, 2 if selected or self.error else 1))
+        if running and not self.error:
+            border = status_accent
+        painter.setPen(QPen(border, 2 if selected or self.error or running else 1))
         painter.setBrush(palette.brush(QPalette.ColorRole.Base))
         painter.drawRoundedRect(self.rect(), 9, 9)
         accent = palette.color(QPalette.ColorRole.Highlight)
+        if running:
+            painter.save()
+            inner = self.rect().adjusted(2, 2, -2, -2)
+            outline = QPainterPath()
+            outline.addRoundedRect(inner, 7, 7)
+            painter.setClipPath(outline, Qt.ClipOperation.IntersectClip)
+            if self.wait_step and self.wait_duration:
+                height = inner.height() * min(1, self.active_seconds / self.wait_duration)
+                water = QColor(accent)
+                water.setAlpha(45)
+                painter.fillRect(QRectF(inner.left(), inner.bottom() - height, inner.width(), height), water)
+            elif self.upload_percent is not None:
+                painter.fillRect(QRectF(2, 74, 296 * self.upload_percent / 100, 3), accent)
+            else:
+                phase = (self.active_seconds % 2) / 2
+                painter.fillRect(QRectF(340 * phase - 40, 74, 40, 3), accent)
+            painter.restore()
         tint = QColor(accent)
         tint.setAlpha(25)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -101,17 +162,51 @@ class _FlowNode(QGraphicsRectItem):
         painter.drawText(18, 22, 36, 36, Qt.AlignmentFlag.AlignCenter, self.badge)
         painter.setPen(palette.color(QPalette.ColorRole.Text))
         font = painter.font()
+        status = ""
+        status_width = 0
+        if self.state in {"waiting", "running"}:
+            if running and self.wait_step and self.wait_duration:
+                remaining = max(0, ceil(self.wait_duration - self.active_seconds))
+                status = str(tr("剩余 {0} 秒", remaining))
+            elif running and self.upload_percent is not None:
+                status = f"{self.upload_percent}%"
+            else:
+                status = str(tr(_FLOW_STATE_LABELS[self.state]))
+            status = painter.fontMetrics().elidedText(status, Qt.TextElideMode.ElideRight, 96)
+            status_width = painter.fontMetrics().horizontalAdvance(status) + 14
         font.setBold(True)
         painter.setFont(font)
-        title = painter.fontMetrics().elidedText(self._title, Qt.TextElideMode.ElideRight, 210)
-        painter.drawText(self.rect().adjusted(66, 10, -18, -38), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
+        title_space = 210 - status_width
+        title = painter.fontMetrics().elidedText(self._title, Qt.TextElideMode.ElideRight, title_space)
+        painter.drawText(self.rect().adjusted(66, 10, -18 - status_width, -38), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
         font.setBold(False)
         painter.setFont(font)
         painter.setPen(palette.color(QPalette.ColorRole.PlaceholderText))
-        subtitle = painter.fontMetrics().elidedText(self._subtitle, Qt.TextElideMode.ElideRight, 210)
-        painter.drawText(self.rect().adjusted(66, 40, -18, -12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, subtitle)
-        colors = {"waiting": "#94a3b8", "running": "#3b82f6", "success": "#22c55e", "failed": "#ef4444"}
-        if self.state:
+        warning_space = 20 if self.missing_parameters else 0
+        subtitle = painter.fontMetrics().elidedText(self._subtitle, Qt.TextElideMode.ElideRight, 210 - warning_space)
+        painter.drawText(self.rect().adjusted(66, 40, -18 - warning_space, -12), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, subtitle)
+        if self.missing_parameters:
+            warning = QRectF(270, 46, 18, 18)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#facc15"))
+            painter.drawEllipse(warning)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(QColor("#422006"))
+            painter.drawText(warning, Qt.AlignmentFlag.AlignCenter, "!")
+            font.setBold(False)
+            painter.setFont(font)
+        colors = {"waiting": "#94a3b8", "running": "#3b82f6", "success": "#22c55e", "failed": "#ef4444", "stopped": "#f59e0b", "pending": "#94a3b8", "excluded": "#cbd5e1"}
+        if status:
+            pill = QRectF(288 - status_width, 12, status_width, 22)
+            tint = QColor(status_accent if running else palette.color(QPalette.ColorRole.Mid))
+            tint.setAlpha(32)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(tint)
+            painter.drawRoundedRect(pill, 6, 6)
+            painter.setPen(palette.color(QPalette.ColorRole.Text if running else QPalette.ColorRole.PlaceholderText))
+            painter.drawText(pill, Qt.AlignmentFlag.AlignCenter, status)
+        elif self.state:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(colors[self.state]))
             painter.drawEllipse(280, 8, 10, 10)
@@ -143,10 +238,12 @@ class _FlowEdge(QGraphicsPathItem):
         self.endpoints = (first, second)
         self.editable = editable
         self.hovered = False
+        self.flow_progress = None
+        self.flow_length = path.length()
         self.setPen(pen)
         self.setAcceptHoverEvents(True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
-        self.insert_point = path.pointAtPercent(path.percentAtLength(path.length() / 2))
+        self.insert_point = path.pointAtPercent(path.percentAtLength(self.flow_length / 2))
         self.setToolTip(tr("点击＋插入节点；选中连线后按 Delete 删除"))
 
     def boundingRect(self):
@@ -189,6 +286,11 @@ class _FlowEdge(QGraphicsPathItem):
         self.setCursor(Qt.CursorShape.PointingHandCursor if self.insert_button_at(event.pos()) else Qt.CursorShape.ArrowCursor)
         super().hoverMoveEvent(event)
 
+    @property
+    def flowing(self):
+        source, target = self.endpoints
+        return target.state == "running" and (source.data(0) == -1 or source.state == "success")
+
     def paint(self, painter, option, widget=None):
         active = self.hovered or self.isSelected()
         pen = self.pen()
@@ -200,6 +302,9 @@ class _FlowEdge(QGraphicsPathItem):
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(self.path())
+        if self.flowing and self.flow_progress is not None:
+            accent = self.endpoints[1]._palette.color(QPalette.ColorRole.Highlight)
+            _draw_edge_pulse(painter, self.path(), self.flow_length, self.flow_progress, accent)
         if active and self.editable:
             point = self.insert_point
             painter.setBrush(self.endpoints[0]._palette.brush(QPalette.ColorRole.Base))
@@ -239,6 +344,9 @@ class TaskFlowView(QGraphicsView):
         self._add_arrow_press = None
         self._selection_press = False
         self._editable = False
+        self.show_missing_parameters = False
+        self.run_actions_enabled = False
+        self.accept_empty_module_drop = False
         self._press_pos = QPoint()
         self._drag_index = None
         self._edges = []
@@ -248,12 +356,12 @@ class TaskFlowView(QGraphicsView):
         self._link_port = None
         self._link_target = None
         self.connection_allowed = None
+        self.module_unavailable = None
         self.parallel_enabled = False
         self._drag_origin = None
         self.drop_position = None
         self._states = {}
         self._invalid = {}
-        self._auto_center = True
         self._center_timer = QTimer(self)
         self._center_timer.setSingleShot(True)
         self._center_timer.timeout.connect(self._center_flow_now)
@@ -261,6 +369,7 @@ class TaskFlowView(QGraphicsView):
         self.verticalScrollBar().sliderPressed.connect(self._stop_auto_center)
         self.setAcceptDrops(True)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
     def set_background_painter(self, paint):
@@ -331,24 +440,8 @@ class TaskFlowView(QGraphicsView):
             self._start_node = self._link_nodes[START] = node
         for index, step in enumerate(steps):
             y = 20 + index * 116
-            label = "上传 JAR 包" if step["type"] == "UPLOAD_JAR" else STEP_LABELS.get(step["type"], step["type"])
-            properties = step.get("properties", {})
-            source = properties.get("SOURCE_BRANCH") or tr("当前分支")
-            target = properties.get("TARGET_BRANCH") or tr("当前分支")
-            subtitle = f"{source} → {target}" if step["type"] == "MERGE_BRANCH" else properties.get("WORKING_DIRECTORY", "") if step["type"] in EXECUTION_LABELS else properties.get("PROJECT_PATH", "")
-            if step["type"] in EXECUTION_LABELS:
-                mode = properties.get("EXECUTION_MODE", "script" if step["type"].endswith("SCRIPT") else "command")
-                subtitle = str(tr("脚本" if mode == "script" else "命令")) + (" · " + str(subtitle) if subtitle else "")
-            if step["type"] in UPLOAD_LABELS:
-                subtitle = properties.get("SERVER", "") + " · " + properties.get("UPLOAD_DIRECTORY", "")
-            if step["type"] in {"HEALTH_CHECK", "OPEN_SHELL"}:
-                subtitle = properties.get("SERVER", "")
-            if step["type"] == "WAIT":
-                subtitle = str(tr("等待 {0} 秒", properties.get("SECONDS", "1")))
-            node = _FlowNode(
-                str(tr("{0}. {1}", index + 1, tr(label))),
-                str(subtitle), palette,
-            )
+            node = _FlowNode(*self._step_text(index, step), palette)
+            node.wait_step = step["type"] == "WAIT"
             position = step.get("position", [20, y])
             if not isinstance(position, (list, tuple)) or len(position) != 2 or not all(isinstance(v, (int, float)) and -1000000 <= v <= 1000000 for v in position):
                 position = [20, y]
@@ -359,8 +452,9 @@ class TaskFlowView(QGraphicsView):
             if graph is not None:
                 self._link_nodes[step["node_id"]] = node
             node.error = self._invalid.get(index, "")
-            if node.error:
-                node.setToolTip(node.toolTip() + "\n" + node.error)
+            if self.show_missing_parameters:
+                node.missing_parameters = str(missing_parameters_message(step))
+            node.refresh_tooltip()
             self.scene().addItem(node)
             self._nodes.append(node)
             if index in self._states:
@@ -373,20 +467,39 @@ class TaskFlowView(QGraphicsView):
         if selected is not None and 0 <= selected < len(self._nodes):
             self._nodes[selected].setSelected(True)
         del blocker
-        if self._auto_center:
-            self._center_timer.start(0)
+
+    @staticmethod
+    def _step_text(index, step):
+        properties = step.get("properties", {})
+        source = properties.get("SOURCE_BRANCH") or tr("当前分支")
+        target = properties.get("TARGET_BRANCH") or tr("当前分支")
+        subtitle = f"{source} → {target}" if step["type"] == "MERGE_BRANCH" else properties.get("WORKING_DIRECTORY", "") if step["type"] in EXECUTION_LABELS else properties.get("PROJECT_PATH", "")
+        if step["type"] in EXECUTION_LABELS:
+            mode = properties.get("EXECUTION_MODE", "script" if step["type"].endswith("SCRIPT") else "command")
+            subtitle = str(tr("脚本" if mode == "script" else "命令")) + (" · " + str(subtitle) if subtitle else "")
+        if step["type"] in UPLOAD_LABELS:
+            subtitle = properties.get("SERVER", "") + " · " + properties.get("UPLOAD_DIRECTORY", "")
+        if step["type"] in {"HEALTH_CHECK", "OPEN_SHELL"}:
+            subtitle = properties.get("SERVER", "")
+        if step["type"] == "WAIT":
+            subtitle = str(tr("等待 {0} 秒", properties.get("SECONDS", "1")))
+        return str(tr("{0}. {1}", index + 1, node_display_name(step))), str(subtitle)
+
+    def update_step_text(self, index, step):
+        node = self._nodes[index]
+        node._title, node._subtitle = self._step_text(index, step)
+        if self.show_missing_parameters:
+            node.missing_parameters = str(missing_parameters_message(step))
+        node.refresh_tooltip()
+        node.update()
 
     def _stop_auto_center(self):
-        self._auto_center = False
         self._center_timer.stop()
 
     def center_flow(self):
-        self._auto_center = True
         self._center_timer.start(0)
 
     def _center_flow_now(self):
-        if not self._auto_center:
-            return
         height = self.viewport().height()
         top_gap = min(64, max(24, height * 0.14))
         scale = self.transform().m22()
@@ -407,11 +520,16 @@ class TaskFlowView(QGraphicsView):
         self.centerOn(center)
 
     def resizeEvent(self, event):
+        if not hasattr(self, "_nodes"):
+            super().resizeEvent(event)
+            return
+        horizontal = self.horizontalScrollBar()
+        vertical = self.verticalScrollBar()
+        left, top = horizontal.value(), vertical.value()
         super().resizeEvent(event)
-        if hasattr(self, "_nodes"):
-            self._expand_canvas()
-            if self._auto_center:
-                self._center_timer.start(0)
+        self._expand_canvas()
+        horizontal.setValue(left)
+        vertical.setValue(top)
 
     def set_editable(self, editable):
         self._editable = editable
@@ -462,19 +580,16 @@ class TaskFlowView(QGraphicsView):
         self._states = {index: "waiting" for index in waiting_indexes}
         for index, node in enumerate(self._nodes):
             node.state = self._states.get(index, "")
-            node.setToolTip(f"{node._title}\n{node._subtitle}")
-            if index in self._states:
-                self.set_step_state(index, "waiting")
+            node.refresh_tooltip()
             node.update()
 
     def set_step_state(self, index, state):
         self._states[index] = state
         if 0 <= index < len(self._nodes):
-            self._nodes[index].state = state
-            labels = {"waiting": "等待执行", "running": "正在执行", "success": "执行成功", "failed": "执行失败"}
             node = self._nodes[index]
-            node.setToolTip(f"{node._title}\n{node._subtitle}\n{tr(labels[state])}")
-            self._nodes[index].update()
+            node.state = state
+            node.refresh_tooltip()
+            node.update()
 
     def wheelEvent(self, event):
         self._stop_auto_center()
@@ -744,14 +859,18 @@ class TaskFlowView(QGraphicsView):
                 self._invalid[index] = self._invalid.get(index, "") + message + "\n"
         for index, node in enumerate(self._nodes):
             node.error = self._invalid.get(index, "")
-            node.setToolTip(f"{node._title}\n{node._subtitle}\n{node.error}".strip())
+            node.refresh_tooltip()
             node.update()
 
     def contextMenuEvent(self, event):
+        if not (self._editable or self.run_actions_enabled):
+            event.accept()
+            return
         item = self.itemAt(event.pos())
         if isinstance(item, _FlowNode):
             index = item.data(0)
             if index < 0 and not self._editable:
+                event.accept()
                 return
             menu = QMenu(self)
             add = menu.addAction(str(tr("添加节点"))) if self._editable else None
@@ -773,9 +892,8 @@ class TaskFlowView(QGraphicsView):
                 remove = menu.addAction(str(tr("删除节点")))
                 menu.addSeparator()
             run_from = menu.addAction(str(tr("从此节点开始执行")))
-            run_one = menu.addAction(str(tr("执行此节点")))
-            run_selected = menu.addAction(str(tr("仅执行选中节点")))
-            run_selected.setEnabled(len(selected) > 1)
+            run_one = menu.addAction(str(tr("仅执行此节点")))
+            run_selected = menu.addAction(str(tr("仅执行选中节点"))) if len(selected) > 1 else None
             try:
                 action = menu.exec(event.globalPos())
                 if action is None:
@@ -971,11 +1089,16 @@ class TaskFlowView(QGraphicsView):
             has_outgoing = any(self._link_nodes[source] is node for source, *_ in self._links)
             title = ("新增并行分支" if self.parallel_enabled else "插入节点") if has_outgoing else "添加下一步"
         menu.addSection(str(tr(title)))
+        issues = self.module_unavailable() if self.module_unavailable else {}
         for category, kinds in CATEGORIES.items():
             submenu = menu.addMenu(str(tr(category)))
+            submenu.setToolTipsVisible(True)
             for kind in kinds:
                 action = submenu.addAction(str(tr(STEP_LABELS[kind])))
                 action.setData(kind)
+                if kind in issues:
+                    action.setEnabled(False)
+                    action.setToolTip(str(issues[kind]))
         try:
             chosen = menu.exec(position)
             if chosen is not None and chosen.data() in STEP_LABELS:
@@ -988,7 +1111,11 @@ class TaskFlowView(QGraphicsView):
 
     def _accept_drag(self, event):
         mime = event.mimeData()
-        return self._editable and isinstance(event.source(), ModuleLibrary) and mime.hasFormat("application/x-pipeterminal-module")
+        return (
+            (self._editable or self.accept_empty_module_drop)
+            and isinstance(event.source(), ModuleLibrary)
+            and mime.hasFormat("application/x-pipeterminal-module")
+        )
 
     def dragEnterEvent(self, event):
         if self._accept_drag(event):
@@ -1060,7 +1187,7 @@ class ModuleLibrary(QTreeWidget):
         self.setIndentation(12)
         self.setIconSize(QSize(20, 20))
         self.setObjectName("taskModuleLibrary")
-        self.setStyleSheet("QTreeWidget::item { padding: 9px 6px; margin: 3px 0; border-radius: 6px; } QTreeWidget::item:hover { background: palette(alternate-base); } QTreeWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }")
+        self.setStyleSheet("QTreeWidget::item { padding: 7px 6px; margin: 1px 0; border-radius: 6px; } QTreeWidget::item:hover { background: palette(alternate-base); } QTreeWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }")
         self.setDragEnabled(True)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setToolTip(tr("拖动模块到中间流程画布后编辑参数"))
@@ -1073,11 +1200,36 @@ class ModuleLibrary(QTreeWidget):
                 item.setData(0, Qt.ItemDataRole.UserRole, kind)
                 icon = QStyle.StandardPixmap.SP_ComputerIcon if kind.startswith("LOCAL") or kind == "OPEN_SHELL" else QStyle.StandardPixmap.SP_DriveNetIcon if kind.startswith("REMOTE") else QStyle.StandardPixmap.SP_ArrowUp if kind in UPLOAD_LABELS else QStyle.StandardPixmap.SP_FileDialogDetailedView if kind == "MAVEN_BUILD" else QStyle.StandardPixmap.SP_MediaPause if kind == "WAIT" else QStyle.StandardPixmap.SP_DialogApplyButton if kind == "HEALTH_CHECK" else None
                 item.setIcon(0, self.style().standardIcon(icon) if icon is not None else self._git_icon())
-                item.setToolTip(0, str(tr(STEP_LABELS[kind])))
+                item.setToolTip(0, tr(STEP_LABELS[kind]))
             font = category.font(0)
             font.setBold(True)
             category.setFont(0, font)
             category.setExpanded(True)
+
+    def set_environment_issues(self, issues):
+        flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled
+        for index in range(self.topLevelItemCount()):
+            category = self.topLevelItem(index)
+            for child_index in range(category.childCount()):
+                item = category.child(child_index)
+                kind = item.data(0, Qt.ItemDataRole.UserRole)
+                issue = issues.get(kind)
+                item.setFlags(item.flags() & ~flags if issue else item.flags() | flags)
+                item.setToolTip(0, issue or tr(STEP_LABELS[kind]))
+
+    def filter_modules(self, text):
+        query = text.strip().casefold()
+        for index in range(self.topLevelItemCount()):
+            category = self.topLevelItem(index)
+            matches = False
+            for child_index in range(category.childCount()):
+                item = category.child(child_index)
+                visible = not query or query in item.text(0).casefold() or query in category.text(0).casefold()
+                item.setHidden(not visible)
+                matches = matches or visible
+            category.setHidden(not matches)
+            if query:
+                category.setExpanded(True)
 
     @staticmethod
     def _git_icon():
@@ -1115,7 +1267,7 @@ class ModuleLibrary(QTreeWidget):
 
     def startDrag(self, supported_actions):
         item = self.currentItem()
-        if item is None or not item.data(0, Qt.ItemDataRole.UserRole):
+        if item is None or not item.flags() & Qt.ItemFlag.ItemIsDragEnabled:
             return
         mime = QMimeData()
         mime.setData("application/x-pipeterminal-module", item.data(0, Qt.ItemDataRole.UserRole).encode("utf-8"))
@@ -1130,8 +1282,7 @@ def parameter_summary(steps, selected=None):
     lines = []
     for index in indexes:
         step = steps[index]
-        label = STEP_LABELS.get(step["type"], step["type"])
-        lines.append(str(tr("{0}. {1}", index + 1, tr(label))))
+        lines.append(str(tr("{0}. {1}", index + 1, node_display_name(step))))
         properties = dict(step.get("properties", {}))
         if step["type"] in EXECUTION_LABELS:
             properties.pop("FAILURE_POLICY", None)

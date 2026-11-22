@@ -104,6 +104,7 @@ MESSAGES = {
 }
 
 _MONITOR_MESSAGES = (
+    ("请选择服务器配置", "Choose a server configuration", "請選擇伺服器設定", "サーバー設定を選択してください", "서버 설정을 선택하세요", "Selecciona una configuración de servidor"),
     ("查找", "Find", "尋找", "検索", "찾기", "Buscar"),
     ("查找终端内容", "Find in terminal", "尋找終端內容", "ターミナル内を検索", "터미널에서 찾기", "Buscar en el terminal"),
     ("查找终端内容（Ctrl+F）", "Find in terminal (Ctrl+F)", "尋找終端內容（Ctrl+F）", "ターミナル内を検索（Ctrl+F）", "터미널에서 찾기 (Ctrl+F)", "Buscar en el terminal (Ctrl+F)"),

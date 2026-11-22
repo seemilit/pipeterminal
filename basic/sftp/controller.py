@@ -275,7 +275,7 @@ class TransferController(QObject):
             writer = None
             if self._log_service is not None:
                 try:
-                    writer = self._log_service.open_session("sftp", self.name)
+                    writer = self._log_service.open_session("sftp", self.name, resource=self.name)
                     writer.event(task.direction, f"{task.sources} -> {task.destination}")
                     self._writers[task.id] = writer
                 except (OSError, ValueError) as exc:

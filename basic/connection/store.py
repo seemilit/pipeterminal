@@ -46,7 +46,7 @@ class ServerConfigStore:
         if self.log_service is not None:
             try:
                 message = json.dumps({"configuration": name, "result": result, **details}, ensure_ascii=False)
-                writer = self.log_service.record_event("configuration", operation, message)
+                writer = self.log_service.record_event("configuration", operation, message, resource=name)
                 self.last_audit_log_path = writer.path
             except (OSError, ValueError, RuntimeError):
                 pass

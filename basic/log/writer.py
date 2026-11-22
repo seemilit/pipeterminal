@@ -13,7 +13,7 @@ from common.i18n.errors import error_message
 
 
 class LogWriter:
-    def __init__(self, path: Path, *, error_callback=None) -> None:
+    def __init__(self, path: Path, *, error_callback=None, reserved_handle=None) -> None:
         self.path = path
         self.error: str | None = None
         self._error_callback = error_callback
@@ -26,8 +26,19 @@ class LogWriter:
         self._cr = False
         self._line_start = True
         self._parser = OutputFilter(self)
-        self._thread = Thread(target=self._run, name="session-log-writer", daemon=True)
+        self._thread = Thread(
+            target=self._run, args=(reserved_handle,), name="session-log-writer", daemon=True,
+        )
         self._thread.start()
+
+    @classmethod
+    def for_task(cls, store, name: str, *, error_callback=None):
+        path, handle = store.reserve_task_log(name)
+        try:
+            return cls(path, error_callback=error_callback, reserved_handle=handle)
+        except Exception:
+            handle.close()
+            raise
 
     def output(self, data: bytes) -> bool:
         """Called by the SSH reader, allowing backpressure without blocking Qt."""
@@ -69,10 +80,12 @@ class LogWriter:
     def wait(self, timeout: float = 3.0) -> bool:
         return self.closed.wait(timeout)
 
-    def _run(self) -> None:
+    def _run(self, reserved_handle=None) -> None:
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("x", encoding="utf-8") as handle:
+            if reserved_handle is None:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                reserved_handle = self.path.open("x", encoding="utf-8")
+            with reserved_handle as handle:
                 self._handle = handle
                 while not self._closing.is_set() or not self._queue.empty():
                     try:

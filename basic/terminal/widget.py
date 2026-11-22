@@ -40,6 +40,7 @@ class NativeTerminalWidget(QAbstractScrollArea):
         self._path_navigation_enabled = False
         self._hovered_path = None
         self._hovered_file = None
+        self._background_painter = None
         self._color_theme: ShellPalette | None = None
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -205,16 +206,24 @@ class NativeTerminalWidget(QAbstractScrollArea):
         super().resizeEvent(event)
         self._resize_timer.start()
 
+    def set_background_painter(self, paint):
+        self._background_painter = paint
+        self.viewport().update()
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self.viewport())
         painter.fillRect(event.rect(), self.renderer.background)
+        if self._background_painter is not None:
+            painter.save()
+            self._background_painter(painter)
+            painter.restore()
         metrics = self.renderer.metrics
         first = self.verticalScrollBar().value()
         top = max(0, math.floor((event.rect().top() - metrics.padding) / metrics.height))
         bottom = min(self.engine.screen.rows, math.ceil((event.rect().bottom() - metrics.padding) / metrics.height) + 1)
         for row in range(top, bottom):
             line = self.engine.screen.row_at(first + row)
-            self.renderer.paint_line(painter, line, row, self._selection, self.search.highlights.get(line.id, ()))
+            self.renderer.paint_line(painter, line, row, self._selection, self.search.highlights.get(line.id, ()), transparent_background=self._background_painter is not None)
         if self._hovered_path is not None:
             painter.setPen(self.renderer.foreground)
             for identifier, start, end in self._hovered_path.spans:

@@ -31,4 +31,5 @@ def get_module() -> ModuleDescriptor:
         id="sftp", name="文件传输", icon="file_manager", order=420,
         sidebar=False, page_factory=create_page, on_startup=register_translations,
         service_factory=create_window_manager,
+        page_kind="dialog",
     )

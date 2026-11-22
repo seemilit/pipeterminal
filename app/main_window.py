@@ -3,7 +3,7 @@
 from ctypes import wintypes
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QSignalBlocker, Qt
+from PySide6.QtCore import QByteArray, QEvent, QSignalBlocker, QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence
 from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox, QToolButton, QWidget
 
@@ -14,6 +14,7 @@ from common.qt.icons import create_icon
 from common.qt.module_page import ModulePage
 from common.qt.shell import ApplicationShell
 from common.qt.window_state import WindowStateController
+from common.qt.workspace import WorkspaceController
 
 from common.i18n.errors import error_message
 
@@ -32,8 +33,6 @@ class MainWindow(QMainWindow):
         self._module_pages: dict[str, QWidget] = {}
         registry.register_service("open_shell_panel", self._open_workflow_shell)
         registry.register_service("show_about", self._show_about)
-        self._active_page: ModulePage | None = None
-        self._current_module_id: str | None = None
         self.setWindowTitle("PipeTerminal")
         self.setMinimumSize(800, 520)
         self.resize(1100, 720)
@@ -44,7 +43,9 @@ class MainWindow(QMainWindow):
         self.shell.sidebar.directory_panel.item_selected.connect(self._select_directory_item)
         self.shell.sidebar.directory_panel.item_activated.connect(self._activate_directory_item)
         self.shell.sidebar.directory_panel.order_changed.connect(self._save_directory_order)
-        self.shell.bottom_panel.panel_activated.connect(self._activate_workspace_panel)
+        self.workspace = WorkspaceController(self)
+        self._exiting = False
+        self._exit_confirmed = False
 
         self.file_actions: dict[str, QAction] = {}
         self._file_action_names: dict[str, str] = {}
@@ -54,26 +55,22 @@ class MainWindow(QMainWindow):
             ("copy", "复制"),
             ("delete", "删除"),
             ("save", "保存"),
+            ("history", "历史版本"),
+            ("log", "日志"),
         ):
             action = QAction(tr(name), self)
-            action.setIcon(create_icon(action_id))
+            action.setIcon(create_icon("plus" if action_id == "new" else action_id))
             action.setEnabled(False)
             action.triggered.connect(
                 lambda _checked=False, value=action_id: self._run_file_action(value)
             )
             self.file_actions[action_id] = action
             self._file_action_names[action_id] = name
-            self.shell.toolbar.add_action(action)
+            self.shell.sidebar.directory_panel.add_action(action)
         self.file_actions["save"].setShortcut(QKeySequence.StandardKey.Save)
-        for action_id, name in (
-            ("connect", "连接"),
-            ("execute", "执行"), ("history", "历史版本"),
-        ):
-            action = QAction(tr(name), self)
-            action.setEnabled(False)
-            action.triggered.connect(lambda _checked=False, value=action_id: self._run_file_action(value))
-            self.file_actions[action_id] = action
-            self._file_action_names[action_id] = name
+        self.addAction(self.file_actions["save"])
+        for action_id in ("history", "log"):
+            self.file_actions[action_id].setVisible(False)
 
         self.sidebar_action = QAction(tr("左侧栏"), self)
         self.sidebar_action.setIcon(create_icon("sidebar"))
@@ -81,26 +78,15 @@ class MainWindow(QMainWindow):
         self.sidebar_action.setChecked(True)
         self.sidebar_action.toggled.connect(self.shell.sidebar.setVisible)
 
-        self.bottom_panel_action = QAction(tr("显示交互窗口"), self)
-        self.bottom_panel_action.setIcon(create_icon("bottom_panel"))
-        self.bottom_panel_action.setCheckable(True)
-        self.bottom_panel_action.setChecked(False)
-        self.bottom_panel_action.toggled.connect(self._set_bottom_panel_visible)
-
         self.reset_layout_action = QAction(tr("重置布局"), self)
         self.reset_layout_action.setIcon(create_icon("reset_layout"))
         self.reset_layout_action.triggered.connect(self._reset_layout)
 
-        self.shell.toolbar.add_action(self.file_actions["connect"], right=True, show_icon=False)
-        self.shell.toolbar.add_action(self.bottom_panel_action, right=True, show_icon=False)
-        run_button = self.shell.toolbar.add_action(self.file_actions["execute"], right=True, show_icon=False)
-        run_button.setProperty("primary", True)
         self._stop_task_action = QAction(tr("停止"), self)
         self._stop_task_action.setVisible(False)
         self._stop_task_action.triggered.connect(self._stop_running_task)
-        self._stop_task_button = self.shell.toolbar.add_action(self._stop_task_action, right=True, show_icon=False)
-        self._stop_task_button.hide()
-        self.shell.editor_toolbar.add_action(self.file_actions["history"], right=True, height=30, show_icon=False)
+        self.shell.editor_toolbar.addAction(self._stop_task_action)
+        self.shell.editor_toolbar.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
         self.shell.toolbar.addAction(self.sidebar_action)
         self.shell.toolbar.addAction(self.reset_layout_action)
         help_button = self.shell.toolbar.add_action(QAction(tr("帮助"), self), right=True, show_icon=False)
@@ -165,32 +151,49 @@ class MainWindow(QMainWindow):
             page = factory()
             if not isinstance(page, QWidget):
                 raise TypeError(tr("模块页面工厂必须返回 QWidget"))
-            if isinstance(page, QDialog):
+            kind = self._page_kind(module_id, page)
+            if kind == "dialog":
                 page.setParent(self, Qt.WindowType.Dialog)
-            elif not isinstance(page, ModulePage) or not page.uses_panel_workspace:
+            elif kind == "home":
                 self.shell.pages.add_page(module_id, page)
             bind_registry = getattr(page, "bind_registry", None)
             if callable(bind_registry):
                 bind_registry(self.registry)
-            if not isinstance(page, QDialog):
+            if kind != "dialog":
                 if isinstance(page, ModulePage):
+                    page.workspace_directory_changed.connect(
+                        lambda key=module_id: self.workspace.refresh_directories(key)
+                    )
                     page.directory_changed.connect(lambda target=page: self._refresh_directory(target))
                     page.directory_item_renamed.connect(
                         lambda previous, name, module=module_id: self._rename_directory_item(module, previous, name)
                     )
                     page.actions_changed.connect(lambda target=page: self._update_file_actions(target))
+                    page.actions_changed.connect(self.workspace.update_background)
                     page.status_changed.connect(
                         lambda message, target=page: self._set_page_status(target, message)
                     )
-                    page.bottom_panel_requested.connect(self._show_bottom_panel)
-                    page.bottom_panel_removed.connect(self._remove_bottom_panel)
-                    page.panel_focus_requested.connect(self._request_panel_focus)
-                    if page.uses_panel_workspace:
+                    page.bottom_panel_requested.connect(
+                        lambda identifier, title, panel, key=module_id: self.workspace.open_session(identifier, title, panel, key)
+                    )
+                    page.bottom_panel_removed.connect(self.workspace.remove_session)
+                    page.panel_focus_requested.connect(self.workspace.request_focus)
+                    if kind == "workspace":
                         page.close_requested.connect(
                             lambda target=page: self._close_workspace_page(target)
                         )
             self._module_pages[module_id] = page
         return page
+
+    def _page_kind(self, module_id, page):
+        kind = self.registry.get(module_id).page_kind
+        if kind != "auto":
+            return kind
+        if isinstance(page, QDialog):
+            return "dialog"
+        if isinstance(page, ModulePage) and page.uses_panel_workspace:
+            return "workspace"
+        return "home"
 
     def _open_workflow_shell(self, name, command, *, directory=""):
         page = self._module_page("connection")
@@ -200,62 +203,45 @@ class MainWindow(QMainWindow):
         page = self._module_page(module_id)
         if page is None:
             return
-        if isinstance(page, QDialog):
+        kind = self._page_kind(module_id, page)
+        if kind == "dialog":
             page.show()
             page.raise_()
             page.activateWindow()
-        else:
-            if (not from_panel and self._active_page is not None and self._active_page is not page
-                    and not self._active_page.uses_panel_workspace):
-                if not self._active_page.can_leave():
-                    self.shell.sidebar.set_active_module(self._current_module_id)
-                    return
-            self._current_module_id = module_id
-            self._active_page = page if isinstance(page, ModulePage) else None
-            if self.shell.panel_focus_mode:
-                self._set_panel_focus_mode(False)
-            self.shell.sidebar.set_active_module(module_id)
-            workspace = isinstance(page, ModulePage) and page.uses_panel_workspace
-            self.shell.set_workspace_mode(workspace)
-            if workspace:
-                self._show_workspace_page(module_id, page)
+            return
+        previous = self.workspace.home_page
+        if not from_panel and previous is not None and previous is not page and not previous.can_leave():
+            self.shell.sidebar.set_active_module(self.workspace.module_id)
+            return
+        self.workspace.show_module(module_id, page, kind)
+        if isinstance(page, ModulePage):
+            if self._window_state is not None:
+                self._window_state.activate_page(module_id, page)
             else:
-                self.shell.pages.show_page(module_id)
-            if self._active_page is not None:
-                self._active_page.activate()
-                if self._window_state is not None:
-                    self._window_state.restore_page(module_id, self._active_page)
-            self._refresh_directory()
-            self._update_file_actions()
-            self._sync_layout_actions()
+                page.activate()
+        self._refresh_directory()
+        self._update_file_actions()
+        self._sync_layout_actions()
 
-    def _show_workspace_page(self, module_id: str, page: ModulePage) -> None:
-        bottom = self.shell.bottom_panel
-        panel_id = "module." + module_id
-        blocker = QSignalBlocker(bottom)
-        if not bottom.has_panel(panel_id):
-            bottom.add_panel(panel_id, page.windowTitle() or tr(self.registry.get(module_id).name), page)
-        bottom.show_panel(panel_id)
-        del blocker
+    def _close_session_tab(self, panel) -> None:
+        if isinstance(panel, ModulePage):
+            has_transfers = getattr(panel, "has_transfer_views", lambda: False)()
+            if panel.can_disconnect_panel() and not has_transfers and not self._confirm_disconnect(panel):
+                return
+            panel.close_requested.emit()
 
-    def _activate_workspace_panel(self, panel: QWidget) -> None:
-        if not self.shell.workspace_mode or not isinstance(panel, ModulePage):
-            return
-        module_id = next((key for key, page in self._module_pages.items() if page is panel), None)
-        if module_id is None:
-            # Shell and SFTP tabs use the server configuration actions and directory.
-            page = self._module_page("connection")
-            if self._active_page is not page:
-                self._active_page = page
-                self._current_module_id = "connection"
-                self.shell.sidebar.set_active_module("connection")
-                self._refresh_directory()
-                self._update_file_actions()
-            return
-        if panel is not self._active_page:
-            self._open_module(module_id, from_panel=True)
-        elif self.shell.panel_focus_mode:
-            self._set_panel_focus_mode(False)
+    def _confirm_disconnect(self, panel) -> bool:
+        return self._confirm_close(tr("断开"), tr("关闭并断开连接：{0}？", panel.windowTitle()))
+
+    def _confirm_close(self, title: str, message: str) -> bool:
+        dialog = QMessageBox(QMessageBox.Icon.Question, title, message, parent=self)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        confirm = dialog.addButton(title, QMessageBox.ButtonRole.YesRole)
+        cancel = dialog.addButton(QMessageBox.StandardButton.Cancel)
+        dialog.setDefaultButton(cancel)
+        dialog.setEscapeButton(cancel)
+        dialog.exec()
+        return dialog.clickedButton() is confirm
 
     def _close_workspace_page(self, page: ModulePage) -> None:
         if not page.can_leave():
@@ -263,33 +249,30 @@ class MainWindow(QMainWindow):
         panel_id = self.shell.bottom_panel.panel_id(page)
         if panel_id is None:
             return
-        self._remove_bottom_panel(panel_id)
-        if self._active_page is page:
-            # Keep the cached editor and its output alive when its tab is closed.
-            self._open_module("connection")
+        self.workspace.remove_session(panel_id)
 
     def _refresh_directory(self, page: ModulePage | None = None) -> None:
-        if page is not None and page is not self._active_page:
+        if page is not None and page is not self.workspace.home_page:
             return
         directory = self.shell.sidebar.directory_panel
-        module_id = self._current_module_id
+        module_id = self.workspace.module_id
         if module_id is not None:
             directory.set_heading(tr(self.registry.get(module_id).name))
-        reorderable = self._active_page is not None and module_id in _REORDERABLE_DIRECTORIES
+        reorderable = self.workspace.home_page is not None and module_id in _REORDERABLE_DIRECTORIES
         directory.set_reorder_enabled(reorderable)
         blocker = QSignalBlocker(directory.item_list)
         items = []
-        if self._active_page is not None:
-            items = self._active_page.directory_items()
+        if self.workspace.home_page is not None:
+            items = self.workspace.home_page.directory_items()
         if reorderable and self._window_state is not None:
             items = self._window_state.order_directory_items(module_id, items)
         directory.set_items(items)
-        if self._active_page is not None:
-            directory.select_item(self._active_page.current_item_id())
+        if self.workspace.home_page is not None:
+            directory.select_item(self.workspace.home_page.current_item_id())
         del blocker
 
     def _save_directory_order(self, order: list[str]) -> None:
-        module_id = self._current_module_id
+        module_id = self.workspace.module_id
         if self._window_state is None or module_id not in _REORDERABLE_DIRECTORIES:
             return
         try:
@@ -299,6 +282,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, tr("保存失败"), error_message(exc))
 
     def _rename_directory_item(self, module_id: str, previous_id: str, new_id: str) -> None:
+        self.workspace.rename_item(module_id, previous_id, new_id)
         if self._window_state is not None:
             try:
                 self._window_state.rename_directory_item(module_id, previous_id, new_id)
@@ -306,32 +290,33 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, tr("保存失败"), error_message(exc))
 
     def _select_directory_item(self, item_id: str) -> None:
-        if self._active_page is not None:
-            selected = self._active_page.select_item(item_id)
-            if selected and not self._active_page.uses_panel_workspace:
-                self._set_bottom_panel_visible(False)
-            self.shell.sidebar.directory_panel.select_item(self._active_page.current_item_id())
+        if self.workspace.home_page is not None:
+            self.workspace.home_page.select_item(item_id)
+            self.shell.sidebar.directory_panel.select_item(self.workspace.home_page.current_item_id())
 
     def _activate_directory_item(self, item_id: str) -> None:
-        if self._active_page is not None:
-            self._active_page.activate_item(item_id)
+        if self.workspace.home_page is not None:
+            self.workspace.home_page.activate_item(item_id)
 
     def _update_file_actions(self, page: ModulePage | None = None) -> None:
         task_page = self._module_pages.get("task")
         can_stop = isinstance(task_page, ModulePage) and task_page.is_action_enabled("stop")
         self._stop_task_action.setVisible(can_stop)
         self._stop_task_action.setEnabled(can_stop)
-        self._stop_task_button.setVisible(can_stop)
-        if page is not None and page is not self._active_page:
+        if page is not None and page is not self.workspace.home_page:
             return
         for action_id, action in self.file_actions.items():
-            label = self._active_page.action_label(action_id) if self._active_page is not None else None
+            if action_id in {"history", "log"}:
+                home = self.workspace.home_page
+                action.setVisible(home is not None and action_id in home.file_actions)
+            label = self.workspace.home_page.action_label(action_id) if self.workspace.home_page is not None else None
             action.setText(label if label is not None else tr(self._file_action_names[action_id]))
-            tooltip = self._active_page.action_tooltip(action_id) if self._active_page is not None else None
+            tooltip = self.workspace.home_page.action_tooltip(action_id) if self.workspace.home_page is not None else None
             action.setToolTip(tooltip if tooltip is not None else action.text())
             action.setEnabled(
-                not self.shell.panel_focus_mode
-                and self._active_page is not None and self._active_page.is_action_enabled(action_id)
+                not self.shell.workspace_mode
+                and not self.shell.panel_focus_mode
+                and self.workspace.home_page is not None and self.workspace.home_page.is_action_enabled(action_id)
             )
 
     def _stop_running_task(self) -> None:
@@ -340,38 +325,15 @@ class MainWindow(QMainWindow):
             task_page.file_actions["stop"]()
 
     def _run_file_action(self, action_id: str) -> None:
-        page = self._active_page
-        if not self.shell.panel_focus_mode and page is not None and page.is_action_enabled(action_id):
+        page = self.workspace.home_page
+        if not self.shell.workspace_mode and not self.shell.panel_focus_mode and page is not None and page.is_action_enabled(action_id):
             handler = page.file_actions.get(action_id)
             if handler is not None:
-                if not page.uses_panel_workspace and action_id != "connect":
-                    self._set_bottom_panel_visible(False)
                 handler()
 
     def _set_page_status(self, page: ModulePage, message: str) -> None:
-        if page is self._active_page:
+        if page is self.workspace.home_page:
             self.shell.status_label.setText(message)
-
-    def _set_bottom_panel_visible(self, visible: bool) -> None:
-        visible = visible and self.shell.bottom_panel.has_panels()
-        if visible:
-            self.shell.set_workspace_mode(True)
-            self._activate_workspace_panel(self.shell.bottom_panel.tabs.currentWidget())
-        else:
-            self._set_panel_focus_mode(False)
-            if self._active_page is not None and self._active_page.uses_panel_workspace:
-                self._open_module("connection", from_panel=True)
-            else:
-                self.shell.set_workspace_mode(False)
-        self._sync_layout_actions()
-
-    def _request_panel_focus(self, panel: QWidget, focused: bool) -> None:
-        panel_id = self.shell.bottom_panel.panel_id(panel)
-        if panel_id is None:
-            return
-        self.shell.set_workspace_mode(True)
-        self.shell.bottom_panel.show_panel(panel_id)
-        self._set_panel_focus_mode(focused)
 
     def _set_panel_focus_mode(self, focused: bool) -> None:
         self.shell.set_panel_focus_mode(focused)
@@ -379,59 +341,76 @@ class MainWindow(QMainWindow):
         self._update_file_actions()
 
     def _sync_layout_actions(self) -> None:
-        for action, widget in (
-            (self.sidebar_action, self.shell.sidebar),
-            (self.bottom_panel_action, self.shell.bottom_panel),
-        ):
-            blocker = QSignalBlocker(action)
-            action.setChecked(not widget.isHidden())
-            del blocker
-        self.sidebar_action.setEnabled(not self.shell.panel_focus_mode)
-        self.bottom_panel_action.setEnabled(self.shell.bottom_panel.has_panels())
-        self.bottom_panel_action.setText(
-            tr("隐藏交互窗口") if self.shell.workspace_mode else tr("显示交互窗口")
-        )
-
-    def _show_bottom_panel(self, panel_id: str, name: str, panel: QWidget) -> None:
-        bottom = self.shell.bottom_panel
-        if not bottom.has_panel(panel_id):
-            bottom.add_panel(panel_id, name, panel)
-        self.shell.set_workspace_mode(True)
-        bottom.show_panel(panel_id)
-        self._sync_layout_actions()
-
-    def _remove_bottom_panel(self, panel_id: str) -> None:
-        self.shell.bottom_panel.remove_panel(panel_id)
-        if not self.shell.bottom_panel.has_panels():
-            self._set_bottom_panel_visible(False)
-        else:
-            self._sync_layout_actions()
+        blocker = QSignalBlocker(self.sidebar_action)
+        _sizes, visible = self.shell.normal_layout()
+        self.sidebar_action.setChecked(visible[1])
+        del blocker
+        self.sidebar_action.setEnabled(not (self.shell.panel_focus_mode or self.shell.workspace_focused))
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if any(callable(getattr(page, "can_close", None)) and not page.can_close() for page in self._module_pages.values()):
+        if not self._exit_confirmed and any(callable(getattr(page, "can_close", None)) and not page.can_close() for page in self._module_pages.values()):
             event.ignore()
             return
-        if (self._active_page is not None and not self._active_page.uses_panel_workspace
-                and not self._active_page.can_leave()):
+        if (not self._exit_confirmed and self.workspace.home_page is not None
+                and not callable(getattr(self.workspace.home_page, "can_close", None))
+                and not self.workspace.home_page.can_leave()):
             event.ignore()
             return
+        manager = self.registry.get_service("task_runs")
+        active = [run for run in manager.runs.values() if run.active] if manager else []
+        sessions = [entry.panel for entry in self.workspace.sessions.values()
+                    if isinstance(entry.panel, ModulePage) and entry.panel.can_disconnect_panel()]
+        if not self._exit_confirmed:
+            names = [run.task_name for run in active] + [panel.windowTitle() for panel in sessions]
+            message = (
+                tr("停止以下任务、断开连接并退出？\n{0}", "\n".join(names))
+                if names else tr("确定退出应用？")
+            )
+            if not self._confirm_close(tr("退出"), message):
+                event.ignore()
+                return
+            self._exit_confirmed = True
+        if active:
+            event.ignore()
+            if not self._exiting:
+                self._exiting = True
+                for run in active:
+                    manager.stop(run)
+                self.shell.status_label.setText(tr("正在停止，请等待执行结束"))
+                self.setEnabled(False)
+                manager.changed.connect(self._finish_exit)
+            return
+        for panel in sessions:
+            shutdown = getattr(panel, "shutdown", panel.disconnect_panel)
+            shutdown()
         if self._window_state is not None:
             try:
-                self._window_state.save(self._current_module_id, self._module_pages)
+                self._window_state.save(self.workspace.module_id, self._module_pages)
             except (OSError, ValueError) as exc:
                 QMessageBox.warning(self, tr("保存失败"), error_message(exc))
         super().closeEvent(event)
 
+    def _finish_exit(self, _run) -> None:
+        manager = self.registry.get_service("task_runs")
+        if not any(run.active for run in manager.runs.values()):
+            manager.changed.disconnect(self._finish_exit)
+            self.setEnabled(True)
+            QTimer.singleShot(0, self.close)
+
     def refresh_icons(self) -> None:
         for action_id, action in self.file_actions.items():
-            action.setIcon(create_icon(action_id))
+            action.setIcon(create_icon("plus" if action_id == "new" else action_id))
         self.sidebar_action.setIcon(create_icon("sidebar"))
-        self.bottom_panel_action.setIcon(create_icon("bottom_panel"))
         self.reset_layout_action.setIcon(create_icon("reset_layout"))
         self.shell.sidebar.refresh_icons()
+        self.workspace.refresh_icons()
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
+        if event.type() == QEvent.Type.LanguageChange and hasattr(self, "workspace"):
+            self.shell.tabs.setTabText(0, tr("主面板"))
+            self.workspace.refresh_directories()
+            self.workspace.update_background()
         if event.type() == QEvent.Type.PaletteChange and hasattr(self, "reset_layout_action"):
             self.refresh_icons()
 
@@ -449,6 +428,7 @@ class MainWindow(QMainWindow):
         return super().nativeEvent(event_type, message)
 
     def _reset_layout(self) -> None:
+        self.workspace.set_active_panel_focus(False)
         self._set_panel_focus_mode(False)
         self.sidebar_action.setChecked(True)
         self.shell.reset_layout()

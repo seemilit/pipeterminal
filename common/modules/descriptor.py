@@ -13,6 +13,14 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class WorkspaceDirectory:
+    title: str
+    list_items: Callable[[], list[str]]
+    open_item: Callable[[QWidget, str], object]
+    order: int = 0
+
+
+@dataclass(frozen=True)
 class ModuleDescriptor:
     id: str
     name: str
@@ -24,8 +32,14 @@ class ModuleDescriptor:
     on_startup: Callable[[], None] | None = None
     service_factory: Callable[[], object] | None = None
     required_capabilities: tuple[str, ...] = ()
+    page_kind: Literal["auto", "home", "workspace", "dialog"] = "auto"
+    workspace_directory: WorkspaceDirectory | None = None
 
     def __post_init__(self) -> None:
+        if self.page_kind not in {"auto", "home", "workspace", "dialog"}:
+            raise ValueError(self.page_kind)
+        if self.workspace_directory is not None and not callable(self.page_factory):
+            raise ValueError(tr("侧栏模块必须提供页面工厂"))
         if not self.id.strip() or not self.name.strip():
             raise ValueError(tr("模块标识和名称不能为空"))
         if self.sidebar_position not in {"top", "bottom"}:

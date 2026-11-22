@@ -4,10 +4,11 @@ from uuid import uuid4
 import json
 
 from PySide6.QtWidgets import QInputDialog, QMessageBox, QVBoxLayout
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 
 from common.i18n import tr
 from common.licensing.prompt import prompt_activation
+from common.qt.document_history import open_document_history
 from common.qt.module_page import ModulePage
 
 from .form import ServerConfigurationForm
@@ -23,6 +24,10 @@ class ConnectionPage(ModulePage):
         self.current_name: str | None = None
         self._names: list[str] = []
         self._dirty = False
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(1000)
+        self._autosave_timer.timeout.connect(self._autosave_configuration)
         self._saved_configuration = ServerConfiguration()
         self._shell_pages: dict[str, list[tuple[str, ModulePage]]] = {}
         self._retained_shell_pages: dict[ModulePage, tuple[str, str]] = {}
@@ -35,6 +40,7 @@ class ConnectionPage(ModulePage):
             "save": self.save_configuration,
             "connect": self.open_shell,
             "history": self.open_history,
+            "log": self.open_server_logs,
         }
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -47,6 +53,7 @@ class ConnectionPage(ModulePage):
 
     def bind_registry(self, registry) -> None:
         super().bind_registry(registry)
+        self.form.bind_preferences(registry.get_service("connection"))
         self.form.bind_endpoint_privacy(registry.get_service("window_appearance"))
         authorization = registry.get_service("authorization")
         if authorization is not self._authorization:
@@ -102,6 +109,8 @@ class ConnectionPage(ModulePage):
     def is_action_enabled(self, action_id: str) -> bool:
         if action_id == "connect":
             return self._shell_factory is not None
+        if action_id == "log":
+            return self.current_name is not None and self.store.log_service is not None
         if action_id == "history":
             return self.current_name is not None
         if action_id == "new":
@@ -109,6 +118,29 @@ class ConnectionPage(ModulePage):
         if action_id == "save":
             return self._dirty
         return self.current_name is not None and action_id in self.file_actions
+
+    def action_label(self, action_id: str) -> str | None:
+        return tr("服务器日志") if action_id == "log" else None
+
+    def open_server_logs(self) -> None:
+        service = self.registry.get_service("log")
+        name = self.current_name
+        if service is None or name is None:
+            return
+        from basic.log.browser import LogBrowserDialog
+        from basic.log.store import SERVER_LOG_KINDS
+
+        store = service.store
+        sources = {
+            label: (lambda category=category: store.server_logs(name, category),
+                    lambda identifier: store.read_server_log(identifier, name), store.directory)
+            for category, label in ((None, "全部日志"), *SERVER_LOG_KINDS.items())
+        }
+        dialog = LogBrowserDialog(tr("{0} · {1}", name, tr("服务器日志")), service, sources, self.window())
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
 
     def action_tooltip(self, action_id: str) -> str | None:
         if action_id == "history" and self.registry.get_service("history") is None:
@@ -118,11 +150,11 @@ class ConnectionPage(ModulePage):
     def toggle_password_visibility(self) -> None:
         policy = self._password_policy()
         if policy is not None:
-            policy.toggle(*self.form.credential_fields())
+            policy.toggle(self.form.controls["PASSWORD"])
             self.form.update_password_visibility()
         else:
             self.form.hide_password()
-            prompt_activation(self.registry, self, tr("显示登录信息"))
+            prompt_activation(self.registry, self, tr("显示密码"))
 
     def _password_policy(self):
         registry = getattr(self, "registry", None)
@@ -141,30 +173,16 @@ class ConnectionPage(ModulePage):
 
     def open_history(self) -> None:
         self._bind_history_service()
-        if self.current_name is None:
-            return
-        if self._history_service is None:
-            prompt_activation(self.registry, self, tr("历史版本"))
-            return
-        if not self.can_leave():
-            return
         try:
-            self.store.ensure_history(self.current_name)
-            resource = self.store.resource_id(self.current_name)
-            service = self._history_service
-            version_id = service.choose_version(
-                resource, self.current_name, self.window(),
-            )
-            if version_id is None or self.registry.get_service("history") is not service:
-                return
-            version = service.read(resource, version_id)
-            configuration = ServerConfiguration.from_document(json.loads(version.content))
-            self.store.save(self.current_name, configuration, reason="回退")
-            self._load_configuration(self.current_name)
-            self._show_history_warning()
-            self.status_changed.emit(tr("已恢复历史版本：{0}", version.created_at))
+            open_document_history(self, self.current_name, self.store, self._restore_history)
         except (OSError, ValueError) as exc:
             self._show_error(exc)
+
+    def _restore_history(self, name: str, content: str) -> None:
+        configuration = ServerConfiguration.from_document(json.loads(content))
+        self.store.save(name, configuration, reason="回退")
+        self._load_configuration(name)
+        self._show_history_warning()
 
     def _show_history_warning(self) -> None:
         if self.store.last_history_error is not None:
@@ -175,7 +193,7 @@ class ConnectionPage(ModulePage):
             self.status_changed.emit(tr("配置日志写入失败：{0}", message))
 
     def can_leave(self) -> bool:
-        if not self._dirty:
+        if not self._dirty or self._autosave_configuration():
             return True
         answer = QMessageBox.question(
             self, tr("存在未保存内容"), tr("是否先保存当前文件？"),
@@ -218,12 +236,12 @@ class ConnectionPage(ModulePage):
                 self._shell_pages[name] = shells
                 for _panel_id, page in shells:
                     page.set_configuration(name, self._saved_configuration)
-                    page.setWindowTitle(f"{name} Shell")
+                    page.setWindowTitle(name)
             for page, (panel_id, previous_name) in list(self._retained_shell_pages.items()):
                 if previous_name == self.current_name:
                     self._retained_shell_pages[page] = (panel_id, name)
                     page.set_configuration(name, self._saved_configuration)
-                    page.setWindowTitle(f"{name} Shell")
+                    page.setWindowTitle(name)
             self.directory_item_renamed.emit(self.current_name, name)
             self.current_name = name
             self._refresh_directory()
@@ -265,7 +283,11 @@ class ConnectionPage(ModulePage):
         except (OSError, ValueError) as exc:
             self._show_error(exc)
 
-    def save_configuration(self, show_message: bool = True) -> bool:
+    def _autosave_configuration(self) -> bool:
+        return self.current_name is not None and self._dirty and self.save_configuration(automatic=True)
+
+    def save_configuration(self, show_message: bool = True, *, automatic: bool = False) -> bool:
+        self._autosave_timer.stop()
         try:
             configuration = self.form.configuration()
             configuration.validate()
@@ -275,19 +297,27 @@ class ConnectionPage(ModulePage):
                 if name is None:
                     return False
                 self.store.create(name, configuration)
-            else:
-                self.store.save(name, configuration)
+            elif not automatic or configuration != self._saved_configuration:
+                self.store.save(name, configuration, reason="自动保存" if automatic else "保存")
         except (OSError, ValueError) as exc:
-            self._show_error(exc)
+            if automatic:
+                self.status_changed.emit(f"{tr('保存失败')} · {exc}")
+            else:
+                self._show_error(exc)
             return False
         self._saved_configuration = configuration
         self.current_name = name
         self._dirty = False
-        self._refresh_directory()
+        if not automatic:
+            self._refresh_directory()
         self._update_state()
         self.status_changed.emit(tr("已保存：{0}", self.current_name))
-        self._show_history_warning()
-        if show_message and self.store.last_history_error is None:
+        if automatic:
+            if self.store.last_history_error is not None:
+                self.status_changed.emit(tr("配置操作已完成，但历史版本保存失败：{0}", self.store.last_history_error))
+        else:
+            self._show_history_warning()
+        if show_message and not automatic and self.store.last_history_error is None:
             QMessageBox.information(self, tr("保存"), tr("已保存：{0}", self.current_name))
         return True
 
@@ -302,7 +332,7 @@ class ConnectionPage(ModulePage):
         cached = shells[0] if shells else self._create_shell_page(name)
         panel_id, page = cached
         page.set_configuration(name, self._saved_configuration)
-        page.setWindowTitle(f"{name} Shell")
+        page.setWindowTitle(name)
         self.bottom_panel_requested.emit(panel_id, page.windowTitle(), page)
         page.connect_selected(path_index)
 
@@ -314,13 +344,14 @@ class ConnectionPage(ModulePage):
             raise ValueError(tr("命令终端不可用"))
         panel_id, page = self._create_shell_page(name)
         page.set_configuration(name, configuration)
-        page.setWindowTitle(f"{name} Shell")
+        page.setWindowTitle(name)
         self.bottom_panel_requested.emit(panel_id, page.windowTitle(), page)
         page.open_workflow_command(command, directory=directory)
         return page
 
     def _create_shell_page(self, name: str):
         page = self._shell_factory()
+        page.workspace_item_id = name
         page.bind_registry(self.registry)
         page.connection_requested.connect(lambda name, target=page: self._request_shell_connection(name, target))
         page.panel_focus_requested.connect(self.panel_focus_requested)
@@ -374,7 +405,7 @@ class ConnectionPage(ModulePage):
             return
         panel_id, page = self._create_shell_page(name)
         page.set_configuration(name, configuration)
-        page.setWindowTitle(f"{name} Shell")
+        page.setWindowTitle(name)
         self.bottom_panel_requested.emit(panel_id, page.windowTitle(), page)
         page.connect_selected()
 
@@ -427,6 +458,8 @@ class ConnectionPage(ModulePage):
                     return
 
     def can_close(self) -> bool:
+        if not self.can_leave():
+            return False
         pages = [page for shells in self._shell_pages.values() for _panel_id, page in shells]
         return all(not callable(getattr(page, "can_close", None)) or page.can_close() for page in (*pages, *self._retained_shell_pages))
 
@@ -444,6 +477,7 @@ class ConnectionPage(ModulePage):
 
     def _load_configuration(self, name: str) -> None:
         configuration = self.store.load(name)
+        self._autosave_timer.stop()
         self.current_name = name
         self._saved_configuration = configuration
         self.form.set_configuration(configuration)
@@ -453,6 +487,7 @@ class ConnectionPage(ModulePage):
         self.status_changed.emit(tr("已加载：{0}", name))
 
     def _clear_editor(self) -> None:
+        self._autosave_timer.stop()
         self.current_name = None
         self._saved_configuration = ServerConfiguration()
         self.form.set_configuration(self._saved_configuration)
@@ -461,13 +496,19 @@ class ConnectionPage(ModulePage):
         self._update_state()
 
     def _refresh_directory(self) -> None:
-        self._names = self.store.list_names()
+        names = self.store.list_names()
+        changed = names != self._names
+        self._names = names
         for name in set(self._shell_pages) | {name for _panel_id, name in self._retained_shell_pages.values()}:
             if name not in self._names:
                 self._close_shell(name)
         self.directory_changed.emit()
+        if changed:
+            self.workspace_directory_changed.emit()
 
     def _mark_dirty(self) -> None:
+        if self.current_name is not None:
+            self._autosave_timer.start()
         if not self._dirty:
             self._dirty = True
             self._update_state()

@@ -40,4 +40,5 @@ def get_module() -> ModuleDescriptor:
     return ModuleDescriptor(
         id="shell", name="命令终端", icon="terminal", order=410, sidebar=False,
         page_factory=create_page, on_startup=register_translations,
+        page_kind="workspace",
     )

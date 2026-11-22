@@ -8,6 +8,8 @@ from common.qt.module_page import ModulePage
 
 
 class FileTransferPanel(ModulePage):
+    workspace_module_id = "sftp"
+
     def __init__(self, dialog):
         super().__init__()
         self.panel_id = "sftp.transfer." + uuid4().hex

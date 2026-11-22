@@ -47,3 +47,10 @@ class ModuleRegistry:
             (module for module in self._modules.values() if module.sidebar and self.is_available(module)),
             key=lambda module: (module.order, module.id),
         )
+
+    def get_workspace_modules(self) -> list[ModuleDescriptor]:
+        return sorted(
+            (module for module in self._modules.values()
+             if module.workspace_directory is not None and self.is_available(module)),
+            key=lambda module: (module.workspace_directory.order, module.id),
+        )

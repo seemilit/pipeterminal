@@ -30,5 +30,6 @@ def get_module() -> ModuleDescriptor:
         order=950,
         sidebar_position="bottom",
         page_factory=create_page,
+        page_kind="dialog",
         on_startup=initialize,
     )

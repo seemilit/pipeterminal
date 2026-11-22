@@ -1,9 +1,9 @@
 """Repeat read-only server checks until consecutive successes are reached."""
 from time import monotonic
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QListView, QMessageBox, QPlainTextEdit, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFormLayout, QHBoxLayout, QListView, QMessageBox, QPlainTextEdit, QSpinBox, QVBoxLayout, QWidget
 from common.i18n import tr
-from common.i18n.widgets import QDialog, QLabel, QPushButton
+from common.i18n.widgets import QComboBox, QDialog, QLabel, QPushButton
 from .dialog_style import parameter_dialog_layout
 from .execution.engine import CommandExitError, ExecutionEngine
 
@@ -103,7 +103,7 @@ class HealthParameterEditor(QWidget):
             for key, field in self.fields.items():
                 if key == "SERVER":
                     field.clear()
-                    field.addItem(str(tr("请选择服务器")), "")
+                    field.addItem(tr("请选择服务器"), "")
                     names = self.services.store.list_names() if self.services else []
                     if values[key] and values[key] not in names:
                         names.append(values[key])

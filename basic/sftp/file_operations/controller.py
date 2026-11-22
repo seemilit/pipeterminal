@@ -73,7 +73,7 @@ class FileOperationController(QObject):
         job = FileOperation(label, context, owner, tuple(affected))
         if self._log_service is not None:
             try:
-                job.writer = self._log_service.open_session("sftp", self._name)
+                job.writer = self._log_service.open_session("sftp", self._name, resource=self._name or None)
                 job.writer.event("file_operation", f"{label}: {paths}")
             except OSError:
                 pass

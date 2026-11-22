@@ -2,10 +2,10 @@
 import shlex
 from time import monotonic
 from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QListView, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFormLayout, QHBoxLayout, QListView, QMessageBox, QVBoxLayout, QWidget
 from shiboken6 import isValid
 from common.i18n import tr
-from common.i18n.widgets import QDialog, QLabel, QLineEdit, QPushButton
+from common.i18n.widgets import QComboBox, QDialog, QLabel, QLineEdit, QPushButton
 from .dialog_style import parameter_dialog_layout
 from .execution.code_editor import CodeEditor
 
@@ -133,7 +133,7 @@ class ShellPanelEditor(QWidget):
             values = step.get("properties", {})
             selected = values.get("SERVER", "")
             self.server.clear()
-            self.server.addItem(str(tr("请选择服务器")), "")
+            self.server.addItem(tr("请选择服务器"), "")
             names = self.services.store.list_names() if self.services else []
             if selected and selected not in names:
                 names.append(selected)

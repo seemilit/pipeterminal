@@ -1,11 +1,11 @@
 """Inline editor for the selected workflow step."""
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QFormLayout, QFrame, QHBoxLayout, QScrollArea, QVBoxLayout
+from PySide6.QtWidgets import QFormLayout, QFrame, QHBoxLayout, QScrollArea, QVBoxLayout
 
 from common.qt.file_dialog import choose_directory
 from common.i18n import tr
-from common.i18n.widgets import QLabel, QLineEdit, QPushButton
+from common.i18n.widgets import QComboBox, QLabel, QLineEdit, QPushButton
 
 from .git.schema import FIELD_LABELS, POLICIES, STEP_FIELDS
 from .execution.editor import ExecutionParameterEditor
@@ -18,6 +18,7 @@ from .execution.schema import STEP_LABELS as EXECUTION_LABELS
 
 class TaskParameterEditor(QFrame):
     changed = Signal(object)
+    name_changed = Signal(str)
 
     def __init__(self, parent=None, services=None):
         super().__init__(parent)
@@ -26,6 +27,14 @@ class TaskParameterEditor(QFrame):
         self.notice = QLabel(tr("选择节点后可直接修改参数"))
         self.notice.setWordWrap(True)
         layout.addWidget(self.notice)
+        self.name_form = QFrame()
+        name_layout = QFormLayout(self.name_form)
+        name_layout.setContentsMargins(0, 0, 0, 0)
+        name_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.name_field = QLineEdit()
+        self.name_field.textEdited.connect(self.name_changed.emit)
+        name_layout.addRow(QLabel(tr("节点名称（选填）")), self.name_field)
+        layout.addWidget(self.name_form)
         self.form_widget = QFrame()
         form = QFormLayout(self.form_widget)
         form.setContentsMargins(0, 0, 0, 0)
@@ -55,7 +64,7 @@ class TaskParameterEditor(QFrame):
             form.addRow(caption, container)
         self.policy = QComboBox()
         for value, label in POLICIES.items():
-            self.policy.addItem(str(tr(label)), value)
+            self.policy.addItem(tr(label), value)
         self.policy.currentIndexChanged.connect(self._changed)
         self.policy_label = QLabel(tr("冲突处理"))
         form.addRow(self.policy_label, self.policy)
@@ -83,6 +92,10 @@ class TaskParameterEditor(QFrame):
 
     def display_step(self, step, editable=True):
         self._step_type = step["type"] if step is not None else None
+        name = step.get("name") if step is not None else None
+        self.name_form.setVisible(step is not None)
+        self.name_field.setEnabled(editable)
+        self.name_field.setText(name if isinstance(name, str) else "")
         remote_step = self._step_type in EXECUTION_LABELS
         self.execution_scroll.setVisible(remote_step)
         self.execution.setEnabled(editable)
@@ -135,8 +148,6 @@ class TaskParameterEditor(QFrame):
             value = step.get("properties", {}).get(key, "600" if key == "BUILD_TIMEOUT" else "artifact" if key == "ARTIFACT_NAME" else "") if supported else ""
             field.setText(value if isinstance(value, str) else "")
         self.policy.blockSignals(True)
-        for index, label in enumerate(POLICIES.values()):
-            self.policy.setItemText(index, str(tr(label)))
         policy = step.get("properties", {}).get("CONFLICT_POLICY", "rollback") if supported else "rollback"
         self.policy.setCurrentIndex(max(0, self.policy.findData(policy)))
         self.policy.blockSignals(False)

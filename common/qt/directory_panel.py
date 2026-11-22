@@ -1,18 +1,20 @@
 """Directory list populated by the currently active feature."""
 
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QDrag
+from PySide6.QtCore import QPoint, QSignalBlocker, QSize, Qt, Signal
+from PySide6.QtGui import QAction, QDrag
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QHBoxLayout,
     QListWidget,
     QListWidgetItem,
+    QMenu,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from common.i18n.widgets import QLabel
+from common.i18n.widgets import QLabel, QToolButton
 from common.i18n import tr
 
 
@@ -70,6 +72,9 @@ class _DirectoryList(QListWidget):
 
 
 class DirectoryPanel(QFrame):
+    _ACTION_WIDTH = 24
+    _ACTION_HEIGHT = 26
+
     item_selected = Signal(str)
     item_activated = Signal(str)
     order_changed = Signal(list)
@@ -80,27 +85,106 @@ class DirectoryPanel(QFrame):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setMinimumWidth(140)
         self._items: dict[str, QListWidgetItem] = {}
+        self._action_buttons: dict[QAction, QToolButton] = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         header = QWidget()
         header.setObjectName("directoryHeader")
-        heading_layout = QHBoxLayout(header)
-        heading_layout.setContentsMargins(14, 10, 12, 10)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
+        heading_layout = QHBoxLayout()
+        heading_layout.setContentsMargins(14, 10, 12, 4)
         self.heading = QLabel(tr("配置列表"))
         self.heading.setObjectName("directoryHeading")
         self.count_label = QLabel("0")
         self.count_label.setObjectName("directoryCount")
         heading_layout.addWidget(self.heading, 1)
         heading_layout.addWidget(self.count_label)
+        header_layout.addLayout(heading_layout)
+        action_bar = QWidget()
+        action_bar.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._action_layout = QHBoxLayout(action_bar)
+        self._action_layout.setContentsMargins(6, 0, 6, 6)
+        self._action_layout.setSpacing(2)
+        self._more_button = self._create_action_button()
+        self._more_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self._more_button.setText("⋯")
+        self._more_button.setToolTip(tr("更多操作"))
+        self._more_menu = QMenu(self._more_button)
+        self._more_button.clicked.connect(self._show_more_actions)
+        self._more_button.hide()
+        self._action_layout.addWidget(self._more_button)
+        self._action_layout.addStretch()
+        header_layout.addWidget(action_bar)
         layout.addWidget(header)
         self.item_list = _DirectoryList()
         self.item_list.setObjectName("directoryList")
         self.item_list.setSpacing(3)
         self.item_list.currentItemChanged.connect(self._select_item)
         self.item_list.itemDoubleClicked.connect(self._activate_item)
+        self.item_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.item_list.customContextMenuRequested.connect(self._show_item_menu)
         self.item_list.order_changed.connect(self.order_changed)
         layout.addWidget(self.item_list, 1)
+
+    def _create_action_button(self) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("directoryActionButton")
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setIconSize(QSize(16, 16))
+        button.setFixedSize(self._ACTION_WIDTH, self._ACTION_HEIGHT)
+        return button
+
+    def add_action(self, action: QAction) -> None:
+        button = self._create_action_button()
+        button.setDefaultAction(action)
+        self._action_layout.insertWidget(len(self._action_buttons), button)
+        self._action_buttons[action] = button
+        action.changed.connect(self._update_action_overflow)
+        self._update_action_overflow()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_more_menu"):
+            self._update_action_overflow()
+
+    def _update_action_overflow(self) -> None:
+        actions = [action for action in self._action_buttons if action.isVisible()]
+        margins = self._action_layout.contentsMargins()
+        available = self.contentsRect().width() - margins.left() - margins.right()
+        spacing = self._action_layout.spacing()
+        slots = (available + spacing) // (self._ACTION_WIDTH + spacing)
+        # Reserve the menu's slot while expanding so one action returns at a time.
+        shown_count = len(actions) if len(actions) == 1 and slots >= 1 else max(0, slots - 1)
+        shown, overflow = actions[:shown_count], actions[shown_count:]
+
+        for action, button in self._action_buttons.items():
+            button.setVisible(action in shown)
+        if self._more_menu.actions() != overflow:
+            self._more_menu.clear()
+            self._more_menu.addActions(overflow)
+        self._more_button.setVisible(bool(overflow))
+
+    def _show_more_actions(self) -> None:
+        self._more_menu.popup(self._more_button.mapToGlobal(QPoint(0, self._more_button.height())))
+
+    def _show_item_menu(self, position: QPoint) -> None:
+        item = self.item_list.itemAt(position)
+        if item is None or not self._action_buttons:
+            return
+        item_id = item.data(Qt.ItemDataRole.UserRole)
+        self.item_list.setCurrentItem(item)
+        current = self.item_list.currentItem()
+        if current is None or current.data(Qt.ItemDataRole.UserRole) != item_id:
+            return
+        menu = QMenu(self.item_list)
+        menu.addActions(list(self._action_buttons))
+        try:
+            menu.exec(self.item_list.viewport().mapToGlobal(position))
+        finally:
+            menu.deleteLater()
 
     def set_reorder_enabled(self, enabled: bool) -> None:
         mode = QAbstractItemView.DragDropMode

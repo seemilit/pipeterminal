@@ -80,6 +80,10 @@ def execution_plan(document, *, indexes=None, start_at=None, check_connections=T
         selected = {ids[index] for index in indexes}
 
     rank = {node: index for index, node in enumerate(ids)}
+    if not check_connections and indexes is not None and start_at is None and len(selected) == 1:
+        node, = selected
+        index = rank[node]
+        return (index,), {index: ()}, []
     if check_connections and start_at is None:
         reachable = _reachable(outgoing, START)
         missing = selected - reachable

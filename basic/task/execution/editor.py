@@ -3,11 +3,11 @@ from pathlib import Path
 from copy import deepcopy
 from threading import Event, Thread
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QMessageBox, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFormLayout, QHBoxLayout, QMessageBox, QSpinBox, QVBoxLayout, QWidget
 from basic.log.viewer import LogViewer
 from common.qt.file_dialog import choose_directory
 from common.i18n import tr
-from common.i18n.widgets import QDialog, QLabel, QLineEdit, QPushButton
+from common.i18n.widgets import QComboBox, QDialog, QLabel, QLineEdit, QPushButton
 from .code_editor import CodeEditor
 from .schema import CHOICES, FIELD_LABELS, STEP_LABELS, defaults, effective_kind, validate, working_directory_required
 from .templates import script_template
@@ -206,14 +206,14 @@ class ExecutionParameterEditor(QWidget):
                     names = self.services.store.list_names() if self.services else []
                     if values[key] and values[key] not in names:
                         names.append(values[key])
-                    field.addItem(str(tr("请选择服务器")), "")
+                    field.addItem(tr("请选择服务器"), "")
                     for name in names:
                         field.addItem(name, name)
                 else:
                     for value, label in CHOICES[key].items():
                         if key == "INTERPRETER" and self.kind.startswith("REMOTE") and value not in {"bash", "sh"}:
                             continue
-                        field.addItem(str(tr(label)), value)
+                        field.addItem(tr(label), value)
                 field.setCurrentIndex(max(0, field.findData(values[key])))
             elif isinstance(field, QSpinBox):
                 field.setValue(int(values[key]))

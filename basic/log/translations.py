@@ -49,3 +49,26 @@ for language, placeholder, shortcut, no_match in (
     ("es", "Buscar en el registro", "Buscar en el registro (Ctrl+F)", "Sin coincidencias"),
 ):
     MESSAGES[language].update({"查找日志内容": placeholder, "查找日志内容（Ctrl+F）": shortcut, "未找到匹配": no_match})
+
+
+for row in (
+    ("服务器日志", "Server logs", "伺服器日誌", "サーバーログ", "서버 로그", "Registros del servidor"),
+    ("全部日志", "All logs", "全部日誌", "すべてのログ", "모든 로그", "Todos los registros"),
+    ("连接记录", "Connections", "連線記錄", "接続履歴", "연결 기록", "Conexiones"),
+    ("文件传输", "File transfers", "檔案傳輸", "ファイル転送", "파일 전송", "Transferencias de archivos"),
+    ("配置操作", "Configuration changes", "設定操作", "設定操作", "구성 변경", "Cambios de configuración"),
+    ("诊断", "Diagnostics", "診斷", "診断", "진단", "Diagnóstico"),
+    ("查看诊断日志", "View diagnostic logs", "檢視診斷日誌", "診断ログを表示", "진단 로그 보기", "Ver registros de diagnóstico"),
+    ("应用报错", "Application errors", "應用程式錯誤", "アプリケーションエラー", "앱 오류", "Errores de la aplicación"),
+    ("日志归档", "Log archive", "日誌封存", "ログアーカイブ", "로그 보관함", "Archivo de registros"),
+    ("日志正在写入，暂时无法删除", "This log is still being written and cannot be deleted yet", "日誌仍在寫入，暫時無法刪除", "書き込み中のため、このログはまだ削除できません", "기록 중인 로그는 아직 삭제할 수 없습니다", "El registro se está escribiendo y aún no puede eliminarse"),
+    ("旧任务日志", "Legacy task logs", "舊任務日誌", "旧タスクログ", "이전 작업 로그", "Registros antiguos de tareas"),
+    ("正在读取日志列表…", "Loading logs…", "正在讀取日誌清單…", "ログ一覧を読み込み中…", "로그 목록 불러오는 중…", "Cargando registros…"),
+    ("暂无日志", "No logs yet", "尚無日誌", "ログはまだありません", "로그가 아직 없습니다", "Todavía no hay registros"),
+    ("打开日志目录", "Open log folder", "開啟日誌資料夾", "ログフォルダーを開く", "로그 폴더 열기", "Abrir carpeta de registros"),
+    ("无法打开日志目录", "Could not open the log folder", "無法開啟日誌資料夾", "ログフォルダーを開けませんでした", "로그 폴더를 열 수 없습니다", "No se pudo abrir la carpeta de registros"),
+    ("此节点没有可单独查看的日志", "No separate log is available for this step", "此節點沒有可單獨檢視的日誌", "このステップ個別のログはありません", "이 단계의 개별 로그가 없습니다", "No hay un registro separado para este paso"),
+):
+    source, *translations = row
+    for language, translation in zip(("en", "zh_TW", "ja", "ko", "es"), translations):
+        MESSAGES[language][source] = translation

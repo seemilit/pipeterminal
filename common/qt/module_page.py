@@ -8,8 +8,15 @@ from PySide6.QtWidgets import QWidget
 
 class ModulePage(QWidget):
     uses_panel_workspace = False
+    fills_panel_workspace = False
+    provides_focus_status = False
+    workspace_item_id: str | None = None
+    workspace_module_id: str | None = None
+    workspace_icon: str | None = None
+    workspace_numbered = False
 
     directory_changed = Signal()
+    workspace_directory_changed = Signal()
     directory_item_renamed = Signal(str, str)
     actions_changed = Signal()
     status_changed = Signal(object)
@@ -30,6 +37,11 @@ class ModulePage(QWidget):
     def activate(self) -> None:
         pass
 
+    def activate_with_selection(self, item_id: str | None) -> None:
+        self.activate()
+        if item_id is not None and any(key == item_id for key, _ in self.directory_items()):
+            self.select_item(item_id)
+
     def directory_items(self) -> list[tuple[str, str]]:
         return []
 
@@ -42,6 +54,12 @@ class ModulePage(QWidget):
     def activate_item(self, item_id: str) -> None:
         pass
 
+    def workspace_item_actions(self, item_id: str):
+        return ()
+
+    def workspace_background_active(self) -> bool:
+        return False
+
     def is_action_enabled(self, action_id: str) -> bool:
         return action_id in self.file_actions
 
@@ -52,7 +70,7 @@ class ModulePage(QWidget):
         return None
 
     def set_panel_focus(self, focused: bool) -> None:
-        pass
+        """Optionally adjust the panel's contents in workspace focus mode."""
 
     def can_duplicate_panel(self) -> bool:
         return False

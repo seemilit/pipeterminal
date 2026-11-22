@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Signal
 from PySide6.QtWidgets import QApplication
 
 from . import LANGUAGES, current_language, initialize, tr
@@ -58,8 +58,12 @@ class LanguageManager(QObject):
         if language == current_language():
             return
         initialize(language)
-        install_qt_translations(QApplication.instance())
+        application = QApplication.instance()
+        install_qt_translations(application)
         refresh_translations()
+        # Custom views also need this notification when Qt's catalog is empty or unavailable.
+        for window in application.topLevelWidgets():
+            QCoreApplication.postEvent(window, QEvent(QEvent.Type.LanguageChange))
         self.language_changed.emit(language)
 
 

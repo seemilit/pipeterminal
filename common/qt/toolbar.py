@@ -1,6 +1,6 @@
 """Toolbar accepting actions from the shell and feature modules."""
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QToolButton, QToolTip, QWidget
 
@@ -15,20 +15,31 @@ class _ActionButton(QToolButton):
 
 
 class Toolbar(QFrame):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, collapse_when_empty: bool = False) -> None:
         super().__init__(parent)
+        self._collapse_when_empty = collapse_when_empty
         self.setObjectName("mainToolbar")
         self.setFrameShape(QFrame.Shape.NoFrame)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setContentsMargins(16, 8, 16, 8)
         layout.setSpacing(0)
         self._left_layout = QHBoxLayout()
         self._left_layout.setSpacing(4)
         self._right_layout = QHBoxLayout()
-        self._right_layout.setSpacing(6)
+        self._right_layout.setSpacing(8)
         layout.addLayout(self._left_layout)
         layout.addStretch(1)
         layout.addLayout(self._right_layout)
+
+    def sizeHint(self) -> QSize:
+        if self._collapse_when_empty and self._left_layout.isEmpty() and self._right_layout.isEmpty():
+            return QSize(0, 0)
+        return super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:
+        if self._collapse_when_empty and self._left_layout.isEmpty() and self._right_layout.isEmpty():
+            return QSize(0, 0)
+        return super().minimumSizeHint()
 
     def add_action(
         self, action: QAction, *, right: bool = False, height: int = 32, show_icon: bool = True,
