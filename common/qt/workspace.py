@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from weakref import WeakSet
 
-from PySide6.QtCore import QObject, QSignalBlocker, QTimer, Qt
+from PySide6.QtCore import QObject, QPoint, QSignalBlocker, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QTreeWidgetItem, QWidget
 
 from common.i18n import tr
@@ -197,15 +197,38 @@ class WorkspaceController(QObject):
             return session.panel if session is not None else None
         return self.shell.pages.currentWidget() if self.module_id is not None else None
 
-    def _panel_for_new_tab(self) -> ModulePage | None:
-        session = self.sessions.get(self.active_session)
-        panel = session.panel if session is not None and self.shell.workspace_mode else None
-        return panel if isinstance(panel, ModulePage) and panel.can_duplicate_panel() else None
-
     def _open_new_tab(self) -> None:
-        panel = self._panel_for_new_tab()
-        if panel is not None:
-            self.shell.bottom_panel.request_new_panel(panel)
+        if not self.shell.workspace_mode:
+            return
+        self._cancel_pending()
+        button = self.shell.workspace_add_button
+        menu = QMenu(button)
+        targets = {}
+        try:
+            for descriptor in self.registry.get_workspace_modules():
+                directory = descriptor.workspace_directory
+                submenu = menu.addMenu(create_icon(descriptor.icon or "log"), tr(directory.tab_label or directory.title))
+                submenu.setToolTipsVisible(True)
+                try:
+                    names = directory.list_items()
+                except (OSError, ValueError) as error:
+                    unavailable = submenu.addAction(tr("操作失败"))
+                    unavailable.setToolTip(error_message(error))
+                    unavailable.setEnabled(False)
+                    continue
+                if not names:
+                    submenu.addAction(tr("暂无可打开的项目")).setEnabled(False)
+                    continue
+                for name in names:
+                    # In a Qt menu, a literal ampersand must be escaped.
+                    action = submenu.addAction(name.replace("&", "&&"))
+                    targets[action] = descriptor.id, name
+            selected = menu.exec(button.mapToGlobal(QPoint(0, button.height()))) if not menu.isEmpty() else None
+            target = targets.get(selected)
+        finally:
+            menu.deleteLater()
+        if target is not None:
+            self._open_item(*target)
 
     def _toggle_focus(self) -> None:
         panel = self._active_panel()
@@ -234,7 +257,9 @@ class WorkspaceController(QObject):
             if isinstance(target, ModulePage):
                 target.set_panel_focus(True)
         self._refresh_focus_button()
-        self.shell.workspace_add_button.setVisible(self._panel_for_new_tab() is not None)
+        self.shell.workspace_add_button.setVisible(
+            self.shell.workspace_mode and bool(self.registry.get_workspace_modules())
+        )
         self.window._sync_layout_actions()
 
     def _refresh_focus_button(self) -> None:

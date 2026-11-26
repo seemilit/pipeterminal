@@ -18,6 +18,7 @@ class WorkspaceDirectory:
     list_items: Callable[[], list[str]]
     open_item: Callable[[QWidget, str], object]
     order: int = 0
+    tab_label: str | None = None
 
 
 @dataclass(frozen=True)

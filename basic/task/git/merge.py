@@ -1,9 +1,8 @@
-"""Merge in an isolated repository so failures never reset user worktrees."""
+"""Merge committed changes directly in the configured target repository."""
 
 import os
 import subprocess
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from common.i18n import tr
 
@@ -66,9 +65,14 @@ class GitMergePush:
     def execute(self, properties):
         target = Path(properties["TARGET_PROJECT_PATH"]).expanduser().resolve()
         source = Path(properties["SOURCE_PROJECT_PATH"]).expanduser().resolve()
+        self.log(tr("检查 Git 工作区"))
+        roots = []
         for directory in (target, source):
-            if self._run(directory, "rev-parse", "--is-inside-work-tree").stdout.strip() != "true":
+            top = self._run(directory, "rev-parse", "--show-toplevel", check=False)
+            if top.returncode or not top.stdout.strip():
                 raise GitMergeError(tr("不是有效的 Git 工作目录：{0}", directory))
+            roots.append(Path(top.stdout.strip()).resolve())
+        target, source = roots
         source_branch = self._branch(source, properties.get("SOURCE_BRANCH", ""))
         branch = self._branch(target, properties.get("TARGET_BRANCH", ""))
         repositories = []
@@ -87,74 +91,41 @@ class GitMergePush:
         # Resolve local remotes relative to the configured project, not the temporary repo.
         if ":" not in remote and not remote.startswith("/"):
             remote = str((target / remote).resolve())
-        fetch_remote = self._run(target, "remote", "get-url", "origin").stdout.strip()
-        if not fetch_remote or fetch_remote.startswith("-"):
-            raise GitMergeError(tr("请配置唯一的远程仓库地址"))
-        if ":" not in fetch_remote and not fetch_remote.startswith("/"):
-            fetch_remote = str((target / fetch_remote).resolve())
-        reference = "refs/heads/" + branch
         self.log(tr("准备合并：{0} → {1}", source_branch, branch))
-        self.log(tr("仅合并源项目已提交的代码，原项目工作区保持不变"))
-        with TemporaryDirectory(prefix="pipeterminal-git-", ignore_cleanup_errors=True) as temporary:
-            workspace = Path(temporary) / "repository"
-            workspace.mkdir()
-            hooks = Path(temporary) / "hooks"
-            hooks.mkdir()
-            object_format = self._run(target, "rev-parse", "--show-object-format").stdout.strip()
-            self._run(workspace, "init", "--quiet", f"--object-format={object_format}")
-            self._run(workspace, "config", "core.hooksPath", str(hooks))
-            self._copy_conversion_config(target, workspace)
-            for key in ("user.name", "user.email"):
-                identity = self._run(target, "config", "--get", key, check=False)
-                if identity.returncode == 0:
-                    self._run(workspace, "config", key, identity.stdout.strip())
-            self.log(tr("读取远程目标分支"))
-            self._run(workspace, "fetch", "--no-tags", "--no-recurse-submodules", fetch_remote, reference)
-            before = self._run(workspace, "rev-parse", "FETCH_HEAD^{commit}").stdout.strip()
-            local = self._run(target, "show-ref", "--hash", "--verify", reference, check=False)
-            if local.returncode == 0:
-                ancestor = self._run(workspace, "merge-base", "--is-ancestor", local.stdout.strip(), before, check=False)
-                if ancestor.returncode != 0:
-                    raise GitMergeError(tr("本地目标分支存在未推送或分叉提交，请先同步后再执行"))
-            self._run(workspace, "checkout", "--quiet", "--detach", before)
-            self._run(workspace, "fetch", "--no-tags", "--no-recurse-submodules", str(source), source_commit)
-            self.log(tr("合并分支，不自动解决冲突"))
-            self._merge(workspace, source_commit, properties, branch, source_branch, no_ff=True)
-            merged = self._run(workspace, "rev-parse", "HEAD^{commit}").stdout.strip()
-            if merged == before:
-                self.log(tr("目标分支已包含源提交，无需推送"))
-                return
-            self.log(tr("推送目标分支"))
-            self.log(tr("待推送提交：{0}", merged))
-            uncertain = False
-            try:
-                result = self._run(workspace, "push", "--porcelain", remote, f"HEAD:{reference}", check=False, timeout=300)
-                if result.returncode == 0:
-                    self.log(tr("合并并推送成功，原项目工作区保持不变"))
-                    return
-                detail = result.stderr.strip() or result.stdout.strip()
-            except (GitMergeError, OSError) as exc:
-                detail = str(exc)
-                uncertain = True
-            self.log(tr("推送未正常结束，正在核实远程状态"))
-            try:
-                actual = self._remote_commit(workspace, remote, reference)
-            except (GitMergeError, OSError) as exc:
-                raise GitMergeError(tr("无法确认远程推送结果；本地未修改，请人工核实远程分支。{0}", detail)) from exc
-            if actual == merged:
-                self.log(tr("已确认远程收到本次提交，推送成功"))
-                return
-            if actual != before and actual and not uncertain:
-                self.log(tr("远程已有更新，重新同步后重试推送"))
-                self._run(workspace, "fetch", "--no-tags", "--no-recurse-submodules", remote, reference)
-                self._merge(workspace, "FETCH_HEAD", properties, branch, tr("远程分支"))
-                self._push_once(workspace, remote, reference)
-                return
-            if actual != before:
-                raise GitMergeError(tr("远程分支已变化，未强制回退；本地未修改，请人工核实。{0}", detail))
-            if uncertain:
-                raise GitMergeError(tr("无法确认远程推送结果；本地未修改，请人工核实远程分支。{0}", detail))
-            raise GitMergeError(tr("推送失败，远程未变化，原项目保持执行前状态。{0}", detail))
+        self.log(tr("源分支本地提交：{0}", source_commit))
+        self._ensure_no_operation(target)
+        if self._run(target, "status", "--porcelain", "--ignore-submodules=none").stdout:
+            raise GitMergeError(tr("目标 Git 工作区有本地改动，请处理后再合并：{0}", target))
+
+        reference = "refs/heads/" + branch
+        if self._run(target, "show-ref", "--verify", "--quiet", reference, check=False).returncode:
+            raise GitMergeError(tr("目标本地分支不存在：{0}", branch))
+        current = self._run(target, "symbolic-ref", "--quiet", "HEAD", check=False)
+        if current.stdout.strip() != reference:
+            self._run(target, "switch", "--no-guess", "--no-overwrite-ignore", branch)
+
+        if self._run(target, "cat-file", "-e", f"{source_commit}^{{commit}}", check=False).returncode:
+            self.log(tr("从本地源目录导入提交"))
+            self._run(target, "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", str(source), source_commit)
+        self.log(tr("合并分支，不自动解决冲突"))
+        self._merge(target, source_commit, properties, branch, source_branch, no_ff=True, preserve_workspace=True)
+
+        merged = self._run(target, "rev-parse", "HEAD^{commit}").stdout.strip()
+        self.log(tr("目标工作区当前提交：{0}", merged))
+        self.log(tr("推送目标分支"))
+        self.log(tr("待推送提交：{0}", merged))
+        try:
+            self._push_once(target, remote, reference)
+        except (GitMergeError, OSError) as error:
+            raise GitMergeError(tr("本地提交已保留，推送未完成：{0}", error)) from error
+        self.log(tr("合并并推送成功"))
+
+    def _ensure_no_operation(self, directory):
+        git_dir = Path(self._run(directory, "rev-parse", "--absolute-git-dir").stdout.strip())
+        if any((git_dir / name).exists() for name in (
+            "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer",
+        )):
+            raise GitMergeError(tr("仓库有未完成的 Git 操作，请先处理"))
 
     def _copy_conversion_config(self, project, workspace):
         for key in ("core.autocrlf", "core.eol", "core.safecrlf", "core.checkRoundtripEncoding", "core.attributesFile"):
@@ -176,19 +147,33 @@ class GitMergePush:
             target.parent.mkdir(exist_ok=True)
             target.write_bytes(source.read_bytes())
 
-    def _merge(self, directory, commit, properties, left_label, right_label, no_ff=False):
+    def _merge(self, directory, commit, properties, left_label, right_label, no_ff=False, *, preserve_workspace=False):
+        args = ["-c", "commit.gpgsign=false", "-c", "merge.conflictStyle=diff3", "merge", "--no-edit", "--no-ff" if no_ff else "--ff"]
+        if preserve_workspace:
+            args.extend(("--no-overwrite-ignore", "--no-autostash"))
+        self._run_merge_command(directory, (*args, commit), properties, left_label, right_label, in_place=preserve_workspace)
+
+    def _run_merge_command(self, directory, args, properties, left_label, right_label, *, in_place=False):
         from .conflicts import resolve_conflicts
-        args = ["-c", "commit.gpgsign=false", "-c", "merge.conflictStyle=diff3", "merge", "--no-edit", "--no-ff" if no_ff else "--ff", commit]
-        result = self._run(directory, *args, check=False, timeout=300)
-        if result.returncode == 0:
-            return
-        unmerged = self._run(directory, "ls-files", "--unmerged", "-z", binary=True).stdout
-        if not unmerged:
-            raise GitMergeError(result.stderr.strip() or result.stdout.strip() or tr("Git 操作失败"))
-        if properties.get("CONFLICT_POLICY", "rollback") != "merge" or self.resolve is None:
-            raise GitMergeError(tr("存在冲突，已停止并回退当前操作"))
-        resolve_conflicts(self, directory, left_label, right_label)
-        self._run(directory, "-c", "commit.gpgsign=false", "commit", "--no-edit", timeout=300)
+
+        try:
+            result = self._run(directory, *args, check=False, timeout=300)
+            if result.returncode == 0:
+                return
+            unmerged = self._run(directory, "ls-files", "--unmerged", "-z", binary=True).stdout
+            if not unmerged:
+                raise GitMergeError(result.stderr.strip() or result.stdout.strip() or tr("Git 操作失败"))
+            if properties.get("CONFLICT_POLICY", "rollback") != "merge" or self.resolve is None:
+                raise GitMergeError(tr("存在冲突，已停止并回退当前操作"))
+            resolve_conflicts(self, directory, left_label, right_label)
+            self._run(directory, "-c", "commit.gpgsign=false", "commit", "--no-edit", timeout=300)
+        except Exception as error:
+            if in_place and self._run(directory, "rev-parse", "--verify", "--quiet", "MERGE_HEAD", check=False).returncode == 0:
+                try:
+                    self._run(directory, "merge", "--abort")
+                except GitMergeError as abort_error:
+                    raise GitMergeError(tr("无法撤销本地合并：{0}；{1}", error, abort_error)) from abort_error
+            raise
 
     def _push_once(self, directory, remote, reference):
         expected = self._run(directory, "rev-parse", "HEAD").stdout.strip()

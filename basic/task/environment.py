@@ -31,11 +31,8 @@ def environment_issue(kind, properties=None, *, servers=None):
         java_path = str(Path(java_home) / "bin" / java) if java_home else java
         if not shutil.which(java_path):
             return tr("未找到 Java，请配置 JAVA_HOME 或 PATH")
-        # The project may provide its own Wrapper. Check after it is selected.
-        if properties is not None:
-            project = Path(properties["PROJECT_PATH"]).expanduser().resolve()
-            if not maven_launcher(project):
-                return tr("未找到 Maven，请配置 Maven Wrapper 或 Maven PATH")
+        if not maven_launcher():
+            return tr("未找到 Maven，请将 mvn 加入 PATH")
     if kind in {"LOCAL_COMMAND", "LOCAL_SCRIPT"}:
         if properties is None:
             if local_interpreter() is None:

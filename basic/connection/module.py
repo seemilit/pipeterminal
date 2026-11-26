@@ -50,6 +50,7 @@ def get_module() -> ModuleDescriptor:
         page_kind="home",
         workspace_directory=WorkspaceDirectory(
             "服务器", lambda: _store().list_names(), lambda page, name: page.open_workflow_shell(name),
+            tab_label="命令终端",
         ),
         on_startup=register_translations,
     )

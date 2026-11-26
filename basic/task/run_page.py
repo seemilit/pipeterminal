@@ -341,7 +341,7 @@ class TaskRunPage(ModulePage):
 
     def _select_step(self, index):
         self.parameters.select_step(index)
-        position = self.filter.findData(index)
+        position = 0 if index < 0 else self.filter.findData(index)
         if position >= 0:
             self.filter.setCurrentIndex(position)
 

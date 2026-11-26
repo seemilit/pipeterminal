@@ -13,21 +13,19 @@ class GitWorkflow(GitMergePush):
         project = Path(self._run(project, "rev-parse", "--show-toplevel").stdout.strip())
         branch = self._branch(project, "")
         reference = "refs/heads/" + branch
-        for state in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"):
-            path = self._run(project, "rev-parse", "--git-path", state).stdout.strip()
-            if (project / path).exists():
-                raise GitMergeError(tr("仓库有未完成的 Git 操作，请先处理"))
+        self._ensure_no_operation(project)
         if self._run(project, "ls-files", "--unmerged", "-z", binary=True).stdout:
             raise GitMergeError(tr("仓库有未完成的 Git 操作，请先处理"))
+        if action == "PULL":
+            self._pull_in_project(project, branch, properties)
+            return
         head = self._run(project, "rev-parse", "HEAD^{commit}").stdout.strip()
         index_tree = self._run(project, "write-tree").stdout.strip()
         head_tree = self._run(project, "rev-parse", "HEAD^{tree}").stdout.strip()
         staged = index_tree != head_tree
         message = properties.get("COMMIT_MESSAGE", "").strip()
-        if action == "COMMIT_PUSH" and staged and not message:
+        if staged and not message:
             raise GitMergeError(tr("存在暂存改动，请填写提交说明"))
-        if action == "PULL" and staged:
-            raise GitMergeError(tr("请先处理暂存改动，再单独拉取代码"))
         remote_result = self._run(project, "config", "--get", f"branch.{branch}.remote", check=False)
         remote_name = remote_result.stdout.strip() or "origin"
         tracking = self._run(project, "config", "--get", f"branch.{branch}.merge", check=False).stdout.strip() or reference
@@ -37,8 +35,8 @@ class GitWorkflow(GitMergePush):
         push_name = (self._run(project, "config", "--get", f"branch.{branch}.pushRemote", check=False).stdout.strip()
                      or self._run(project, "config", "--get", "remote.pushDefault", check=False).stdout.strip()
                      or remote_name)
-        push_remote = self._remote_url(project, push_name, push=True) if action == "COMMIT_PUSH" else None
-        push_reference = self._push_reference(project, branch, remote_name, push_name, tracking) if action == "COMMIT_PUSH" else None
+        push_remote = self._remote_url(project, push_name, push=True)
+        push_reference = self._push_reference(project, branch, remote_name, push_name, tracking)
         with TemporaryDirectory(prefix="pipeterminal-git-", ignore_cleanup_errors=True) as temporary:
             workspace = Path(temporary) / "repository"
             workspace.mkdir()
@@ -63,7 +61,7 @@ class GitWorkflow(GitMergePush):
                 if not fast_forward and properties.get("CONFLICT_POLICY", "rollback") != "merge":
                     raise GitMergeError(tr("分支已分叉，已停止并回退当前操作"))
                 self._merge(workspace, remote_head, properties, branch, tr("远程分支"))
-            if action == "COMMIT_PUSH" and staged:
+            if staged:
                 # Store a snapshot object without changing the user's branch or index.
                 snapshot = self._run(project, "-c", "commit.gpgsign=false", "commit-tree", index_tree, "-p", head, "-m", message).stdout.strip()
                 self._run(workspace, "fetch", "--no-tags", "--no-recurse-submodules", str(project), snapshot)
@@ -79,9 +77,6 @@ class GitWorkflow(GitMergePush):
                     self._run(workspace, "-c", "commit.gpgsign=false", "commit", "-m", message, timeout=300)
             final = self._run(workspace, "rev-parse", "HEAD").stdout.strip()
             self._publish_local(project, workspace, branch, head, index_tree, final)
-            if action == "PULL":
-                self.log(tr("拉取完成"))
-                return
             self.log(tr("本地更新已保存，开始推送"))
             try:
                 # Retry once if the remote advanced while preparing the result.
@@ -96,6 +91,18 @@ class GitWorkflow(GitMergePush):
             except (GitMergeError, OSError) as exc:
                 raise GitMergeError(tr("本地提交已保留，推送未完成：{0}", exc)) from exc
             self.log(tr("提交并推送完成"))
+
+    def _pull_in_project(self, project, branch, properties):
+        staged = self._run(project, "diff", "--cached", "--quiet", check=False)
+        if staged.returncode == 1:
+            raise GitMergeError(tr("请先处理暂存改动，再单独拉取代码"))
+        if staged.returncode:
+            raise GitMergeError(staged.stderr.strip() or tr("Git 操作失败"))
+        mode = "--ff" if properties.get("CONFLICT_POLICY") == "merge" else "--ff-only"
+        args = ("-c", "commit.gpgsign=false", "-c", "merge.conflictStyle=diff3",
+                "pull", "--no-rebase", "--no-autostash", "--no-edit", mode)
+        self._run_merge_command(project, args, properties, branch, tr("远程分支"), in_place=True)
+        self.log(tr("拉取完成"))
 
     def _push_reference(self, project, branch, fetch_name, push_name, tracking):
         source_ref = "refs/heads/" + branch

@@ -126,6 +126,13 @@ class TaskRunManager(QObject):
 
     def _log(self, run, index, message):
         text = str(message)
+        if not text:
+            return
+        # The viewer and log writer already separate records with a line break.
+        if text.endswith("\r\n"):
+            text = text[:-2]
+        elif text.endswith(("\r", "\n")):
+            text = text[:-1]
         run.events.append((index, text))
         run.writer.event("task" if index is None else f"task-step-{index}", text)
         self.output_received.emit(run, index, text)

@@ -26,7 +26,9 @@ class ExecutionError(RuntimeError):
 
 
 class CommandExitError(ExecutionError):
-    pass
+    def __init__(self, exit_code: int):
+        super().__init__(tr("命令执行失败，退出码：{0}", exit_code))
+        self.exit_code = exit_code
 
 
 class UnknownRemoteState(ExecutionError):
@@ -111,9 +113,16 @@ def local_argv(executable, interpreter, path, args):
 
 
 class ExecutionEngine:
-    def __init__(self, services, log, stop, *, output_decoder=None):
+    def __init__(self, services, log, stop, *, output_decoder=None, report_exit_code=True):
         self.services, self.log, self.stop = services, log, stop
         self._output_decoder = output_decoder
+        self._report_exit_code = report_exit_code
+
+    def _check_exit_code(self, code: int) -> None:
+        if self._report_exit_code:
+            self.log(tr("退出码：{0}", code))
+        if code:
+            raise CommandExitError(code)
 
     def execute(self, kind, properties):
         values = validate(kind, properties)
@@ -123,6 +132,13 @@ class ExecutionEngine:
             self._remote(kind, values)
         else:
             self._local(kind, values)
+        self.log(tr("执行完成，耗时 {0} 秒", round(time.monotonic() - started, 2)))
+
+    def run_local_process(self, argv, cwd, timeout, *, encoding=None):
+        if self.stop.is_set():
+            raise ExecutionError(tr("执行已停止"))
+        started = time.monotonic()
+        self._process(argv, cwd, timeout, encoding=encoding)
         self.log(tr("执行完成，耗时 {0} 秒", round(time.monotonic() - started, 2)))
 
     def _local(self, kind, values):
@@ -235,10 +251,7 @@ class ExecutionEngine:
             tail = decoder.decode(b"", final=True)
             if tail:
                 self.log(tail)
-            code = process.wait(timeout=5)
-            self.log(tr("退出码：{0}", code))
-            if code:
-                raise CommandExitError(tr("命令执行失败，退出码：{0}", code))
+            self._check_exit_code(process.wait(timeout=5))
         finally:
             drained.set()
             if process.poll() is None:
@@ -334,19 +347,21 @@ class ExecutionEngine:
                     if self.stop.is_set() or (deadline is not None and time.monotonic() >= deadline):
                         self._stop_remote(client, sftp, pid_path)
                     if channel.recv_ready():
-                        self.log(decoder.decode(channel.recv(16384)))
-                        time.sleep(.01)
+                        text = decoder.decode(channel.recv(16384))
+                        if text:
+                            self.log(text)
+                            time.sleep(.01)
                     elif not client.get_transport().is_active() or channel.closed:
                         raise UnknownRemoteState(tr("远程连接中断，执行状态未知；不会自动重试"))
                     else:
                         time.sleep(.05)
-                self.log(decoder.decode(b"", final=True))
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    self.log(tail)
                 code = channel.recv_exit_status()
                 if code == -1:
                     raise UnknownRemoteState(tr("远程连接中断，执行状态未知；不会自动重试"))
-                self.log(tr("退出码：{0}", code))
-                if code:
-                    raise CommandExitError(tr("命令执行失败，退出码：{0}", code))
+                self._check_exit_code(code)
             except ExecutionError:
                 raise
             except Exception as exc:

@@ -45,6 +45,7 @@ ROWS = (
     ("命令已填入输入框，请退出终端专注模式后确认发送", "Command queued in the input box. Exit terminal focus mode to review and send it.", "命令已填入輸入框，請退出終端機專注模式後確認傳送", "コマンドを入力欄に入力しました。ターミナル集中モードを終了して確認のうえ送信してください。", "명령을 입력란에 넣었습니다. 터미널 집중 모드를 종료한 뒤 확인하고 보내세요.", "El comando está en el campo de entrada. Sal del modo de enfoque para revisarlo y enviarlo."),
     ("退出专注模式", "Exit focus mode", "退出專注模式", "集中モードを終了", "집중 모드 종료", "Salir del modo de enfoque"),
     ("新建页签", "New tab", "新增分頁", "新しいタブ", "새 탭", "Nueva pestaña"),
+    ("暂无可打开的项目", "No items to open", "暫無可開啟的項目", "開ける項目がありません", "열 수 있는 항목이 없습니다", "No hay elementos para abrir"),
     ("更多操作", "More actions", "更多操作", "その他の操作", "추가 작업", "Más acciones"),
     ("加载更多…", "Load more…", "載入更多…", "さらに読み込む…", "더 불러오기…", "Cargar más…"),
     ("历史版本需要付费授权", "Version history requires a paid license", "歷史版本需要付費授權", "履歴機能には有料ライセンスが必要です", "버전 기록에는 유료 라이선스가 필요합니다", "El historial de versiones requiere una licencia de pago"),

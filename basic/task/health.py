@@ -29,6 +29,8 @@ def execute_health(properties, services, log, stop):
     values = validate_health(properties)
     deadline = monotonic() + int(values["HEALTH_TIMEOUT"])
     successes = attempts = 0
+    last_failed_exit_code = None
+    engine = ExecutionEngine(services, log, stop, report_exit_code=False)
     required = int(values["SUCCESS_COUNT"])
     while monotonic() < deadline:
         if stop.is_set():
@@ -38,11 +40,12 @@ def execute_health(properties, services, log, stop):
             break
         attempts += 1
         try:
-            ExecutionEngine(services, log, stop).execute("REMOTE_COMMAND", {
+            engine.execute("REMOTE_COMMAND", {
                 "SERVER": values["SERVER"], "INTERPRETER": "sh", "COMMAND": values["HEALTH_COMMAND"],
                 "TIMEOUT": str(min(30, remaining)),
             })
-        except CommandExitError:
+        except CommandExitError as error:
+            last_failed_exit_code = error.exit_code
             successes = 0
             log(tr("第 {0} 次健康检查未通过", attempts))
         else:
@@ -57,7 +60,10 @@ def execute_health(properties, services, log, stop):
         remaining = deadline - monotonic()
         if remaining > 0 and stop.wait(min(int(values["HEALTH_INTERVAL"]), remaining)):
             raise RuntimeError(tr("执行已停止"))
-    raise RuntimeError(tr("健康检查在 {0} 秒内未通过", values["HEALTH_TIMEOUT"]))
+    timeout = values["HEALTH_TIMEOUT"]
+    if last_failed_exit_code is not None:
+        raise RuntimeError(tr("健康检查在 {0} 秒内未通过（最后一次失败的退出码：{1}）", timeout, last_failed_exit_code))
+    raise RuntimeError(tr("健康检查在 {0} 秒内未通过", timeout))
 
 
 class HealthParameterEditor(QWidget):

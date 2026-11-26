@@ -1,19 +1,14 @@
 """Local Maven packaging as an independent workflow step."""
 import codecs
 import os
-import shlex
 import shutil
 from pathlib import Path
 from common.i18n import tr
 from ..execution.engine import ExecutionEngine
 
 
-def maven_launcher(project):
-    windows = os.name == "nt"
-    wrapper = project / ("mvnw.cmd" if windows else "mvnw")
-    if wrapper.is_file():
-        return str(wrapper)
-    return (shutil.which("mvn.cmd") or shutil.which("mvn")) if windows else shutil.which("mvn")
+def maven_launcher():
+    return shutil.which("mvn")
 
 
 def validate_build(properties):
@@ -79,22 +74,13 @@ class MavenBuild:
         if not project.is_dir() or not (project / "pom.xml").is_file():
             raise ValueError(tr("项目目录中未找到 pom.xml：{0}", str(project)))
         windows = os.name == "nt"
-        wrapper = project / ("mvnw.cmd" if windows else "mvnw")
-        executable = maven_launcher(project)
-        if not executable:
-            raise ValueError(tr("未找到 Maven，请配置 Maven Wrapper 或 Maven PATH"))
-        if windows:
-            if any(char in executable for char in '%!"\r\n'):
-                raise ValueError(tr("Maven 路径包含不支持的字符"))
-            command = 'call "' + executable + '" clean package'
-        else:
-            command = ("sh " if wrapper.is_file() else "") + shlex.quote(executable) + " clean package"
+        if not maven_launcher():
+            raise ValueError(tr("未找到 Maven，请将 mvn 加入 PATH"))
+        argv = [os.environ.get("COMSPEC") or "cmd.exe", "/d", "/c", "mvn clean package"] if windows else ["mvn", "clean", "package"]
         self.log(tr("开始打包：{0}", str(project)))
         decoder = MavenOutputDecoder() if windows else None
-        ExecutionEngine(self.services, self.log, self.stop, output_decoder=decoder).execute("LOCAL_COMMAND", {
-            "INTERPRETER": "cmd" if windows else "sh", "WORKING_DIRECTORY": str(project),
-            "COMMAND": command, "TIMEOUT": str(timeout),
-        })
+        engine = ExecutionEngine(self.services, self.log, self.stop, output_decoder=decoder)
+        engine.run_local_process(argv, project, timeout, encoding="utf-8-sig")
         from ..jar_artifact import detect_jars
         artifacts = tuple(detect_jars(project, self.stop, properties.get("JAR_FILTER", "")))
         self.log(tr("自动识别 JAR：{0}", "\n".join(str(path) for path in artifacts)))

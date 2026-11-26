@@ -328,7 +328,7 @@ class ConnectionPage(ModulePage):
             return
 
         name = self.current_name
-        shells = self._shell_pages.get(name)
+        shells = self._shell_pages.get(name) if path_index is None else None
         cached = shells[0] if shells else self._create_shell_page(name)
         panel_id, page = cached
         page.set_configuration(name, self._saved_configuration)

@@ -213,7 +213,7 @@ class EditorTests(unittest.TestCase):
 
 
 class GitCancellationTests(unittest.TestCase):
-    def test_cancel_preserves_local_and_remote_repositories(self):
+    def test_in_place_merge_rejects_edits_and_can_abort_or_resolve_conflicts(self):
         with tempfile.TemporaryDirectory(prefix="pipeterminal-merge-test-", ignore_cleanup_errors=True) as directory:
             root = Path(directory).resolve()
             self.assertTrue(root.is_relative_to(Path(tempfile.gettempdir()).resolve()))
@@ -244,18 +244,28 @@ class GitCancellationTests(unittest.TestCase):
                 calls.append(request)
                 self.assertIn("|||||||", request["files"][0]["result"])
                 return None
+            properties = dict(SOURCE_PROJECT_PATH=str(source), SOURCE_BRANCH="feature",
+                              TARGET_PROJECT_PATH=str(target), TARGET_BRANCH="main", CONFLICT_POLICY="merge")
             with patch.dict(os.environ, environment, clear=True):
                 with self.assertRaises(GitMergeError):
-                    GitMergePush(lambda message: None, cancel).execute(dict(SOURCE_PROJECT_PATH=str(source), SOURCE_BRANCH="feature", TARGET_PROJECT_PATH=str(target), TARGET_BRANCH="main", CONFLICT_POLICY="merge"))
+                    GitMergePush(lambda message: None, cancel).execute(properties)
+            self.assertEqual(calls, [])
+            self.assertEqual((target/"local.txt").read_text(), "keep")
+            self.assertEqual(before, (git(source, "rev-parse", "HEAD"), git(target, "rev-parse", "HEAD"), git(bare, "rev-parse", "main")))
+            (target/"local.txt").unlink()
+            with patch.dict(os.environ, environment, clear=True):
+                with self.assertRaises(GitMergeError):
+                    GitMergePush(lambda message: None, cancel).execute(properties)
             self.assertEqual(len(calls), 1)
             self.assertEqual(before, (git(source, "rev-parse", "HEAD"), git(target, "rev-parse", "HEAD"), git(bare, "rev-parse", "main")))
-            self.assertEqual((target/"local.txt").read_text(), "keep")
             self.assertEqual((target/"file.txt").read_text(), "target\n")
+            self.assertEqual(git(target, "status", "--porcelain"), "")
             with patch.dict(os.environ, environment, clear=True):
-                GitMergePush(lambda message: None, lambda request: {entry["path"]: ("right", None) for entry in request["files"]}).execute(dict(SOURCE_PROJECT_PATH=str(source), SOURCE_BRANCH="feature", TARGET_PROJECT_PATH=str(target), TARGET_BRANCH="main", CONFLICT_POLICY="merge"))
+                GitMergePush(lambda message: None, lambda request: {entry["path"]: ("right", None) for entry in request["files"]}).execute(properties)
             self.assertEqual(git(bare, "show", "main:file.txt"), "source")
-            self.assertEqual(before[:2], (git(source, "rev-parse", "HEAD"), git(target, "rev-parse", "HEAD")))
-            self.assertEqual((target/"local.txt").read_text(), "keep")
+            self.assertEqual(git(source, "rev-parse", "HEAD"), before[0])
+            self.assertEqual(git(target, "rev-parse", "HEAD"), git(bare, "rev-parse", "main"))
+            self.assertEqual((target/"file.txt").read_text(), "source\n")
 
 
 if __name__ == "__main__":
